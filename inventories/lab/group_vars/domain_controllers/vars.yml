@@ -1,0 +1,1 @@
+ad_dsrm_password: "{{ vault_ad_dsrm_password }}"

@@ -1,0 +1,42 @@
+---
+- name: Evitar que las NIC que no son del lab se registren en DNS
+  ansible.windows.win_powershell:
+    script: |
+      $labIf = (Get-NetIPAddress -AddressFamily IPv4 -IPAddress '{{ ansible_host }}').InterfaceIndex
+      $Ansible.Changed = $false
+      Get-DnsClient |
+        Where-Object { $_.InterfaceIndex -ne $labIf -and $_.RegisterThisConnectionsAddress } |
+        ForEach-Object {
+          Set-DnsClient -InterfaceIndex $_.InterfaceIndex -RegisterThisConnectionsAddress $false
+          $Ansible.Changed = $true
+        }
+
+- name: Instalar el rol AD DS y sus herramientas
+  ansible.windows.win_feature:
+    name: AD-Domain-Services
+    include_management_tools: true
+    state: present
+  register: adds_feature
+
+- name: Reiniciar si la instalación del rol lo requiere
+  ansible.windows.win_reboot:
+  when: adds_feature.reboot_required
+
+- name: Crear el bosque {{ ad_domain_name }}
+  microsoft.ad.domain:
+    dns_domain_name: "{{ ad_domain_name }}"
+    domain_netbios_name: "{{ ad_netbios_name }}"
+    safe_mode_password: "{{ ad_dsrm_password }}"
+    forest_mode: "{{ ad_forest_mode }}"
+    domain_mode: "{{ ad_domain_mode }}"
+    install_dns: true
+    reboot: true
+
+- name: Esperar a que Active Directory responda
+  ansible.windows.win_powershell:
+    script: (Get-ADDomain -ErrorAction Stop).DNSRoot
+  register: ad_ready
+  until: ad_ready is succeeded
+  retries: 30
+  delay: 20
+  changed_when: false

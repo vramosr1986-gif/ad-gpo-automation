@@ -1,0 +1,21 @@
+
+PLAY [Desplegar el bosque de Active Directory] *********************************
+
+TASK [ad_forest : Evitar que las NIC que no son del lab se registren en DNS] ***
+ok: [DC01]
+
+TASK [ad_forest : Instalar el rol AD DS y sus herramientas] ********************
+ok: [DC01]
+
+TASK [ad_forest : Reiniciar si la instalación del rol lo requiere] *************
+skipping: [DC01]
+
+TASK [ad_forest : Crear el bosque lab.local] ***********************************
+ok: [DC01]
+
+TASK [ad_forest : Esperar a que Active Directory responda] *********************
+ok: [DC01]
+
+PLAY RECAP *********************************************************************
+DC01                       : ok=4    changed=0    unreachable=0    failed=0    skipped=1    rescued=0    ignored=0   
+

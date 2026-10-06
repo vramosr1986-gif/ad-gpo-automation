@@ -1,0 +1,5 @@
+ad_domain_name: lab.local
+ad_netbios_name: LAB
+ad_forest_mode: WinThreshold
+ad_domain_mode: WinThreshold
+ad_lab_network: 192.168.56.0/24

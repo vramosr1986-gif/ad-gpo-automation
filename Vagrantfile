@@ -3,7 +3,7 @@ config.vm.box = "gusztavvargadr/windows-server-2022-standard"
 config.vm.box_version = "2607.0.0"
 config.vm.communicator ="winrm"
 config.winrm.transport = :negotiate
-config.vm.boot_timeout = 900
+config.vm.boot_timeout = 1800
 config.vm.synced_folder ".", "/vagrant", disabled: true
 
 config.vm.define "DC01" do |dc|

@@ -1,0 +1,17 @@
+# Vagrant
+.vagrant/
+*.box
+
+# Ansible
+*.retry
+.vault_pass*
+vault_pass*
+
+# Python
+.venv/
+__pycache__/
+
+# Editores / SO
+.vscode/
+Thumbs.db
+desktop.ini

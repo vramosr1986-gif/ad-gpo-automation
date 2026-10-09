@@ -24,7 +24,7 @@ El objetivo no es un alta masiva desde CSV, sino gestionar el **ciclo de vida co
 - [x] Paso 3 — Primera VM: DC01 con Vagrant
 - [x] Paso 4 — Nodo de control Ansible en WSL y primer `win_ping`
 - [x] Paso 5 — Inventario y credenciales cifradas con Ansible Vault
-- [ ] Paso 6 — Promoción de DC01 a controlador de dominio (`lab.local`) con Ansible
+- [x] Paso 6 — Promoción de DC01 a controlador de dominio (`lab.local`) con Ansible
 - [ ] Paso 7 — DC02 (dominio hijo) y SRV01 (servidor miembro)
 
 **Fases de automatización** (cuando el entorno esté listo)
@@ -345,6 +345,126 @@ options = "metadata,umask=22,fmask=11"
 ```
 
 **`No inventory was parsed ... Could not match supplied host pattern: windows`.** Ansible no encontraba el inventario porque el `ansible.cfg` aún no existía. `ansible --version | grep "config file"` muestra qué fichero de configuración está usando (o `None`).
+
+### Paso 6 — DC01 promovido a controlador de dominio de `lab.local` con Ansible
+
+Primera automatización real: un rol de Ansible (`ad_forest`) que convierte un Windows Server recién creado en el primer controlador de dominio de un bosque nuevo. Es idempotente: si el dominio ya existe, no cambia nada.
+
+**Datos del dominio** (`inventories/lab/group_vars/all/vars.yml`), comunes a todas las máquinas porque los servidores miembro los necesitarán para unirse:
+
+```yaml
+ad_domain_name: lab.local
+ad_netbios_name: LAB
+ad_forest_mode: WinThreshold      # nivel funcional Windows Server 2016
+ad_domain_mode: WinThreshold
+ad_lab_network: 192.168.56.0/24
+```
+
+**Contraseña DSRM** (*Directory Services Restore Mode*, la cuenta de emergencia del DC para restaurar AD cuando el servicio está parado). Está en `group_vars/domain_controllers/`, y no en `all/`, por mínimo privilegio: solo los DCs reciben ese secreto.
+
+```
+group_vars/domain_controllers/vars.yml   → ad_dsrm_password: "{{ vault_ad_dsrm_password }}"
+group_vars/domain_controllers/vault.yml  → vault_ad_dsrm_password (cifrado)
+```
+
+**El rol** (`roles/ad_forest/tasks/main.yml`):
+
+| # | Tarea | Módulo | Por qué |
+|---|---|---|---|
+| 1 | Las NIC que no son del lab no se registran en DNS | `win_powershell` | La VM tiene dos NIC: NAT (`10.0.2.15`, la de Vagrant) y la del lab. Si el DC registra la IP NAT, los clientes intentan contactar con una IP inalcanzable |
+| 2 | Instalar el rol AD DS | `win_feature` | Requisito previo de la promoción |
+| 3 | Reiniciar solo si hace falta | `win_reboot` + `when` | |
+| 4 | Crear el bosque | `microsoft.ad.domain` | Equivale a `Install-ADDSForest`: crea `lab.local`, instala DNS y reinicia. `reboot_timeout: 1800` (ver problemas) |
+| 5 | Esperar a que AD responda | `win_powershell` + `until`/`retries` | Tras el reinicio AD tarda en estar disponible |
+| 6 | Servidor DNS escuchando solo en la IP del lab | `win_powershell` | Ver problemas |
+| 7 | Eliminar registros A fuera de la red del lab | `win_powershell` | Limpia `lab.local` y `_msdcs.lab.local` |
+
+**El playbook** (`playbooks/01-deploy-forest.yml`) solo dice a quién se aplica:
+
+```yaml
+- name: Desplegar el bosque de Active Directory
+  hosts: domain_controllers
+  gather_facts: false
+  roles:
+    - ad_forest
+```
+
+**Ejecución.** Antes, una simulación con `--check --diff` (el equivalente a un `terraform plan`), y después la ejecución real:
+
+```bash
+vagrant snapshot save DC01 00-base-limpia          # (PowerShell) punto de vuelta atrás
+ansible-playbook playbooks/01-deploy-forest.yml --check --diff
+ansible-playbook playbooks/01-deploy-forest.yml
+```
+
+**Verificación.** Un playbook de solo lectura (`playbooks/00-estado-dc.yml`) que muestra el estado del servidor y que reutilizo antes y después de cada cambio:
+
+```
+"Dominio": "lab.local",
+"Rol": "Controlador de dominio (PDC)",
+"AD_DS": "Installed",  "DNS": "Installed",
+"NICs": [
+    "Ethernet 2  192.168.56.10  registra_en_DNS=True",
+    "Ethernet  10.0.2.15  registra_en_DNS=False"
+]
+```
+
+Registros A de la zona `lab.local`, todos en la red del lab:
+
+```
+HostName       IP
+--------       --
+@              192.168.56.10
+dc01           192.168.56.10
+DomainDnsZones 192.168.56.10
+ForestDnsZones 192.168.56.10
+```
+
+Una segunda ejecución del playbook termina con `changed=0`: el rol es idempotente. Las salidas están en `docs/evidencias/`.
+
+#### Problemas que me encontré
+
+**1. `The role 'ad_forest' was not found`.** Por defecto Ansible busca los roles junto al playbook (`playbooks/roles/`). Como separo `playbooks/` y `roles/` en la raíz del repo, hay que indicarlo en `ansible.cfg` con `roles_path = roles`. Además, el fichero de tareas tiene que llamarse `tasks/main.yml`; con otro nombre el rol no ejecuta nada.
+
+**2. Erratas en nombres de módulos y variables** (`win_reeboot`, `reebot_required`). `--syntax-check` detecta un módulo inexistente, pero no una variable mal escrita, que solo falla al ejecutar. La extensión de Ansible para VS Code y `ansible-doc <módulo>` ayudan a evitarlas.
+
+**3. Timeout en el reinicio tras la promoción.**
+
+```
+Failed to reboot after module returned reboot_required ...
+Timed out waiting for last boot time check (timeout=600)
+```
+
+El bosque se creó bien, pero el primer arranque como DC (con 1 vCPU y VirtualBox sobre Hyper-V) tardó más de los 10 minutos que espera el módulo por defecto. Solución: `reboot_timeout: 1800` en `microsoft.ad.domain`. Como el rol es idempotente, al relanzar el playbook continuó donde se había quedado.
+
+**4. `dc01.lab.local` registrado también con la IP NAT (`10.0.2.15`).** Aunque la tarea 1 desactiva el registro del *cliente* DNS en la NIC NAT, el *servidor* DNS registra un registro A por cada IP en la que escucha, y por defecto escucha en todas. Solución en el rol: limitar las IPs de escucha del servidor DNS a la del lab (`dnscmd /ResetListenAddresses`) y eliminar los registros A que apunten fuera de la red del lab. Lo detecté consultando la zona después de la promoción, no por un error: por eso la verificación forma parte del paso.
+
+**5. La tarea 6 devolvía `changed` en cada ejecución (no era idempotente).** Lo detectó la segunda ejecución del playbook: la tarea reconfiguraba y reiniciaba el servicio DNS cada vez, aunque ya estuviera bien. El diagnóstico:
+
+```bash
+ansible DC01 -m ansible.windows.win_shell -a '(Get-DnsServerSetting -All).ListeningIPAddress | ForEach-Object { "$_ (" + $_.AddressFamily + ")" }'
+# 192.168.56.10 ()      ← AddressFamily vacío: es un texto, no un objeto IPAddress
+```
+
+`ListeningIPAddress` devuelve las IPs como **texto**, no como objetos `IPAddress`. La comprobación usaba `$_.IPAddressToString`, que en un texto no existe y devolvía vacío, así que la comparación nunca coincidía. Solución: convertir a texto con `"$_"`, que funciona en los dos casos:
+
+```powershell
+$current = @((Get-DnsServerSetting -All).ListeningIPAddress | ForEach-Object { "$_" })
+```
+
+Ahora el playbook completo termina con `changed=0` en ejecuciones sucesivas.
+
+**Bosque resultante** (`Get-ADForest`):
+
+```
+Name               : lab.local
+ForestMode         : Windows2016Forest
+Domains            : {lab.local}
+GlobalCatalogs     : {DC01.lab.local}
+SchemaMaster       : DC01.lab.local
+DomainNamingMaster : DC01.lab.local
+Sites              : {Default-First-Site-Name}
+```
 
 ## Estructura del proyecto
 

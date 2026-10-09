@@ -31,6 +31,7 @@
     domain_mode: "{{ ad_domain_mode }}"
     install_dns: true
     reboot: true
+    reboot_timeout: 1800
 
 - name: Esperar a que Active Directory responda
   ansible.windows.win_powershell:
@@ -40,3 +41,30 @@
   retries: 30
   delay: 20
   changed_when: false
+
+  
+- name: Servidor DNS escuchando solo en la IP del lab
+  ansible.windows.win_powershell:
+    script: |
+      $want = '{{ ansible_host }}'
+      $current = @((Get-DnsServerSetting -All).ListeningIPAddress | ForEach-Object { "$_" })
+      if ($current.Count -eq 1 -and $current[0] -eq $want) {
+        $Ansible.Changed = $false
+        return
+      }
+      dnscmd /ResetListenAddresses $want | Out-Null
+      Restart-Service DNS
+
+- name: Eliminar registros A que apunten fuera de la red del lab
+  ansible.windows.win_powershell:
+    script: |
+      $labPrefix = '{{ ansible_host.rsplit(".", 1)[0] }}.*'
+      $Ansible.Changed = $false
+      foreach ($zone in @('{{ ad_domain_name }}', '_msdcs.{{ ad_domain_name }}')) {
+        Get-DnsServerResourceRecord -ZoneName $zone -RRType A -ErrorAction SilentlyContinue |
+          Where-Object { $_.RecordData.IPv4Address.IPAddressToString -notlike $labPrefix } |
+          ForEach-Object {
+            Remove-DnsServerResourceRecord -ZoneName $zone -InputObject $_ -Force
+            $Ansible.Changed = $true
+          }
+      }

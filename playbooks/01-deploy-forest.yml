@@ -1,6 +1,6 @@
 ---
 - name: Desplegar el bosque de Active Directory
-  hosts: domain_controllers
+  hosts: dc_root
   gather_facts: false
   roles:
     - ad_forest

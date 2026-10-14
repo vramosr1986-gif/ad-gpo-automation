@@ -7,9 +7,7 @@ config.vm.boot_timeout = 1800
 config.vm.synced_folder ".", "/vagrant", disabled: true
 config.vm.provision "lab-tuning", type: "shell", path: "scripts/Optimize-LabGuest.ps1"
 
-# Proveedor principal: VMware Workstation (vagrant up --provider vmware_desktop).
-# Con el hipervisor de Windows activo, VirtualBox cae al modo NEM "Snail" y es
-# demasiado lento; VMware funciona bien sobre Hyper-V y admite varias CPUs.
+# Proveedor: VMware Workstation. Convive con el hipervisor de Windows (WSL2, Docker).
 # VMware no configura private_network en invitados Windows: la IP fija la pone
 # el provisioner "lab-ip".
 config.vm.define "DC01" do |dc|
@@ -22,13 +20,6 @@ config.vm.define "DC01" do |dc|
     vm.cpus = 2
     vm.gui = false
     vm.linked_clone = true
-    end
-  dc.vm.provider "virtualbox" do |vb|
-    vb.name ="lab-DC01"
-    vb.memory = 4096
-    vb.cpus = 1
-    vb.gui = false
-    vb.linked_clone = true
     end
   end
 config.vm.define "DC02" do |dc|
@@ -44,12 +35,18 @@ config.vm.define "DC02" do |dc|
     vm.gui = false
     vm.linked_clone = true
     end
-  dc.vm.provider "virtualbox" do |vb|
-    vb.name ="lab-DC02"
-    vb.memory = 4096
-    vb.cpus = 1
-    vb.gui = false
-    vb.linked_clone = true
-    end
   end
+config.vm.define "SRV01" do |srv|
+  srv.vm.box = "gusztavvargadr/windows-server-2022-standard-core"
+  srv.vm.hostname = "SRV01"
+  srv.vm.network "private_network", ip: "192.168.56.20"
+  srv.vm.provision "lab-ip", type: "shell", path: "scripts/Set-LabIP.ps1", args: ["-IPAddress", "192.168.56.20"]
+  srv.vm.provider "vmware_desktop" do |vm|
+    vm.vmx["displayName"] = "lab-SRV01"
+    vm.memory = 2048
+    vm.cpus = 2
+    vm.gui = false
+    vm.linked_clone = true
+  end
+end
 end

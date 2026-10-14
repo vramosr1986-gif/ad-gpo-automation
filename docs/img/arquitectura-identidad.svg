@@ -163,6 +163,6 @@
   <text x="976" y="560" class="s">Runbooks y game days probados</text>
 
   <!-- pie -->
-  <text x="40" y="616" class="s" style="fill:#64748b">Ansible · PowerShell · AWX · GLPI · Vault · Loki/Grafana · Windows Server 2022 · Vagrant + VirtualBox</text>
+  <text x="40" y="616" class="s" style="fill:#64748b">Ansible · PowerShell · AWX · GLPI · Vault · Loki/Grafana · Windows Server 2022 · Vagrant + VMware Workstation</text>
   <text x="1240" y="616" class="s" style="fill:#64748b" text-anchor="end">github.com/…/ad-gpo-automation</text>
 </svg>

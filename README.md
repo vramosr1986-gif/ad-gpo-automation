@@ -25,7 +25,6 @@ El objetivo no es un alta masiva desde CSV, sino gestionar el **ciclo de vida co
 - [x] Paso 4 — Nodo de control Ansible en WSL y primer `win_ping`
 - [x] Paso 5 — Inventario y credenciales cifradas con Ansible Vault
 - [x] Paso 6 — Promoción de DC01 a controlador de dominio (`lab.local`) con Ansible
-- [x] Cambio de VirtualBox a VMware Workstation
 - [ ] Paso 7 — DC02 (dominio hijo) y SRV01 (servidor miembro)
   - [x] DC02: dominio hijo `emea.lab.local`
   - [ ] SRV01: servidor miembro
@@ -45,30 +44,35 @@ El objetivo no es un alta masiva desde CSV, sino gestionar el **ciclo de vida co
 
 **Mi equipo:** Windows 11 Home, i7-13700HX, 32 GB de RAM, con WSL2 (Ubuntu 24.04) ya funcionando.
 
-Windows 11 Home no trae Hyper-V Manager, así que las VMs del lab las monto con **VirtualBox** y las defino con **Vagrant**, para poder recrearlas cuando quiera. Además he instalado **Docker Desktop** (usa WSL2 como backend) y **Git**.
+Windows 11 Home no trae Hyper-V Manager, así que las VMs del lab las monto con **VMware Workstation Pro** y las defino con **Vagrant**, para poder recrearlas cuando quiera. Además he instalado **Docker Desktop** (usa WSL2 como backend) y **Git**.
 
-> **Actualización:** después del Paso 6 cambié VirtualBox por **VMware Workstation Pro**, porque con el hipervisor de Windows activo VirtualBox era demasiado lento. Los pasos 1 a 6 cuentan el montaje original con VirtualBox; el motivo y los cambios están en [Cambio de VirtualBox a VMware Workstation](#cambio-de-virtualbox-a-vmware-workstation).
-
-Instalé todo con `winget` desde una PowerShell como administrador:
+Vagrant, Docker y Git, con `winget` desde una PowerShell como administrador:
 
 ```powershell
-winget install -e --id Oracle.VirtualBox --accept-package-agreements --accept-source-agreements
 winget install -e --id Hashicorp.Vagrant
 winget install -e --id Docker.DockerDesktop
 winget install -e --id Git.Git
+```
+
+VMware Workstation Pro (gratuito para uso personal) y la **Vagrant VMware Utility** se instalan con sus instaladores oficiales. La utilidad es un servicio de Windows (`VagrantVMware`) que hace de puente entre Vagrant y VMware. Después, el plugin de Vagrant:
+
+```powershell
+vagrant plugin install vagrant-vmware-desktop
 ```
 
 Versiones instaladas (octubre 2026):
 
 | Herramienta | Versión |
 |---|---|
-| VirtualBox | 7.2.20 (winget instaló también la dependencia Microsoft.VCRedist.2015+.x64) |
+| VMware Workstation Pro | 26.0.1 |
 | Vagrant | 2.4.9 |
+| Plugin `vagrant-vmware-desktop` | 3.0.5 |
+| Vagrant VMware Utility | 1.0.24 |
 | Docker Desktop | 4.94.0 (Docker Engine 29.8.2) |
 | Git | 2.55.0.windows.3 |
 | WSL | Ubuntu-24.04, versión 2 |
 
-Como ya tenía WSL2, Hyper-V está activo. Para que VirtualBox funcione encima de él, activé Windows Hypervisor Platform:
+Con WSL2 y Docker, el hipervisor de Windows está siempre activo, y no se puede quitar sin perderlos a los dos (y en WSL2 vive Ansible). Así que el hipervisor de las VMs tiene que convivir con él: VMware Workstation lo hace a través de **Windows Hypervisor Platform**, que activé junto con la plataforma de máquina virtual:
 
 ```powershell
 dism /online /enable-feature /featurename:HypervisorPlatform /all /norestart
@@ -98,13 +102,13 @@ Para comprobar que todo estaba bien instalado, preparé un script que muestra to
 powershell -ExecutionPolicy Bypass -File .\scripts\Test-LabTools.ps1
 ```
 
-![Versiones de las herramientas del lab](docs/img/01-herramientas-host.png)
-
 También se puede comprobar herramienta por herramienta:
 
 ```powershell
-& "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" --version
+(Get-Item "C:\Program Files\VMware\VMware Workstation\vmware.exe").VersionInfo.ProductVersion
 vagrant --version
+vagrant plugin list
+Get-Service VagrantVMware          # debe estar Running
 docker --version
 git --version
 wsl -l -v
@@ -113,13 +117,29 @@ wsl -l -v
 Notas de este paso:
 
 - **Docker Desktop:** lo abrí una vez para aceptar la licencia y activé *Settings → Resources → WSL Integration → Ubuntu-24.04*.
-- **VirtualBox con Hyper-V:** funciona, pero algo más lento. Sale una tortuga verde en la barra de estado de las VMs; es normal.
-- **Si falla la instalación de VirtualBox por Visual C++:** `winget install -e --id Microsoft.VCRedist.2015+.x64` y volver a instalar.
 - **Si no se reconoce `vagrant` o `docker`:** me pasó con `docker` ("El término 'docker' no se reconoce..."). Docker estaba bien instalado y su ruta (`C:\Program Files\Docker\Docker\resources\bin`) ya estaba en el PATH del sistema, pero la terminal se había abierto antes de la instalación. Se arregla cerrando y abriendo la terminal, o recargando el PATH en la misma sesión:
 
   ```powershell
   $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
   ```
+
+#### Problemas que me encontré
+
+**La Vagrant VMware Utility no reconoce VMware Workstation 26.** Primero el instalador `.msi` se negaba a instalar (*requires a valid installation of VMware Workstation*) aunque Workstation estaba instalado; después, el servicio `VagrantVMware` no arrancaba, y su log (`C:\ProgramData\HashiCorp\vagrant-vmware-desktop\logs\utility.log`) decía:
+
+```
+[ERROR] failed to generate VMware installation information: error="El sistema no puede encontrar el archivo especificado."
+```
+
+La causa: Workstation 26 es la primera versión totalmente de 64 bits y registra su instalación en la vista de 64 bits del registro (`HKLM\SOFTWARE\VMware, Inc.`), mientras que la utilidad 1.0.24 solo la busca en la vista de 32 bits (`WOW6432Node`). Es un fallo conocido ([issue #177](https://github.com/hashicorp/vagrant-vmware-desktop/issues/177), con arreglo propuesto en el [PR #182](https://github.com/hashicorp/vagrant-vmware-desktop/pull/182)). Mientras no se publique, lo resuelve copiar la clave y añadir el valor `Core` (PowerShell como administrador):
+
+```powershell
+reg copy "HKLM\SOFTWARE\VMware, Inc.\VMware Workstation" "HKLM\SOFTWARE\WOW6432Node\VMware, Inc.\VMware Workstation" /s /f
+reg add  "HKLM\SOFTWARE\WOW6432Node\VMware, Inc." /v Core /t REG_SZ /d "VMware Workstation" /f
+net start VagrantVMware
+```
+
+Con solo la copia de la clave, el instalador ya acepta Workstation, pero el servicio no arranca: hace falta también `Core`. Cuando funciona, el log termina con `api service start: host=127.0.0.1 port=9922`. Por el camino también usé *Restore Defaults* en el Editor de red virtual para regenerar las redes VMnet.
 
 ### Paso 2 — Repositorio Git y estructura del proyecto
 
@@ -141,11 +161,13 @@ Añadí dos ficheros de configuración:
 **Imagen base.** Vagrant no instala Windows desde una ISO: usa una *box*, una VM ya instalada y preparada. Uso la de Windows Server 2022 Standard (evaluación) de `gusztavvargadr`, que trae WinRM habilitado y el usuario `vagrant`/`vagrant`:
 
 ```powershell
-vagrant box add gusztavvargadr/windows-server-2022-standard --provider virtualbox
+vagrant box add gusztavvargadr/windows-server-2022-standard --provider vmware_desktop --box-version 2607.0.0
 vagrant box list
 ```
 
-**Vagrantfile.** Define la VM DC01 con IP fija en una red privada del lab:
+**Red del lab.** Antes de crear la VM, en el *Editor de red virtual* de VMware (como administrador) creé la red **VMnet1**: host-only, `192.168.56.0/24`, **sin DHCP**. El equipo tiene la `192.168.56.1` y cada VM una IP fija (ver problemas 2 y 3).
+
+**Vagrantfile.** Define la VM DC01 con IP fija en la red del lab:
 
 ```ruby
 Vagrant.configure("2") do |config|
@@ -153,18 +175,20 @@ Vagrant.configure("2") do |config|
   config.vm.box_version  = "2607.0.0"        # versión fija: lab reproducible
   config.vm.communicator = "winrm"
   config.winrm.transport = :negotiate        # NTLM: sigue funcionando tras promover a DC
-  config.vm.boot_timeout = 900
+  config.vm.boot_timeout = 1800
   config.vm.synced_folder ".", "/vagrant", disabled: true
+  config.vm.provision "lab-tuning", type: "shell", path: "scripts/Optimize-LabGuest.ps1"
 
   config.vm.define "DC01" do |dc|
     dc.vm.hostname = "DC01"
     dc.vm.network "private_network", ip: "192.168.56.10"
-    dc.vm.provider "virtualbox" do |vb|
-      vb.name         = "lab-DC01"
-      vb.memory       = 4096
-      vb.cpus         = 1                    # ver problema 2
-      vb.gui          = true
-      vb.linked_clone = true
+    dc.vm.provision "lab-ip", type: "shell", path: "scripts/Set-LabIP.ps1", args: ["-IPAddress", "192.168.56.10"]
+    dc.vm.provider "vmware_desktop" do |vm|
+      vm.vmx["displayName"] = "lab-DC01"
+      vm.memory       = 4096
+      vm.cpus         = 2
+      vm.gui          = false
+      vm.linked_clone = true
     end
   end
 end
@@ -173,14 +197,16 @@ end
 Decisiones:
 
 - **`transport = :negotiate`:** la autenticación *basic* solo funciona con cuentas locales. Al promover la VM a controlador de dominio desaparecen las cuentas locales y Vagrant dejaría de poder conectarse.
-- **`private_network`:** además de la NIC NAT que crea Vagrant (salida a Internet), una segunda NIC *host-only* con IP fija `192.168.56.10`. Esa es la red del lab, por la que entrará Ansible.
+- **`private_network`:** además de la NIC NAT que crea Vagrant (salida a Internet, red `192.168.133.0/24` de VMware), una segunda NIC conectada a VMnet1. Esa es la red del lab, por la que entrará Ansible.
 - **`linked_clone`:** la box se importa una sola vez como VM maestra y cada VM usa un disco diferencial. Ahorra disco y tiempo al crear DC02 y SRV01.
+- **Provisioner `lab-ip`** ([`scripts/Set-LabIP.ps1`](scripts/Set-LabIP.ps1)): pone la IP fija en la NIC del lab (ver problema 4). Identifica la NIC NAT porque es la que tiene la ruta por defecto, y configura la otra. Es idempotente: si la IP ya está, no hace nada.
+- **Provisioner `lab-tuning`** ([`scripts/Optimize-LabGuest.ps1`](scripts/Optimize-LabGuest.ps1)): desactiva Windows Update y el análisis en tiempo real de Defender. Así las VMs consumen menos CPU y disco. **Solo para el laboratorio.**
 
 Para crearla:
 
 ```powershell
 vagrant validate
-vagrant up DC01
+vagrant up DC01 --provider vmware_desktop
 ```
 
 #### Problemas que me encontré
@@ -190,26 +216,27 @@ vagrant up DC01
 - `syntax error, unexpected ':'` → había un punto en lugar de una coma: `"/vagrant". disabled:` en vez de `"/vagrant", disabled:`.
 - `The following settings shouldn't exist: boot, synced, version, linked` → había escrito `boot.timeout` en lugar de `boot_timeout` (y lo mismo con `synced_folder`, `box_version` y `linked_clone`). Para Vagrant el punto separa niveles de configuración; el guion bajo forma parte del nombre.
 
-**2. La VM se quedaba en negro y `vagrant up` acababa con `Timed out while waiting for the machine to boot`.**
+**2. Vagrant no puede crear la red host-only** (`POST /vmnet` → `400`). Por eso VMnet1 se crea a mano en el Editor de red virtual, como se indica arriba.
 
-La ventana de la VM no mostraba nada, ni siquiera el logo. El log de VirtualBox (`%USERPROFILE%\VirtualBox VMs\lab-DC01\Logs\VBox.log`) mostraba la causa:
-
-```
-HM: HMR3Init: Attempting fall back to NEM: VT-x is not available
-...
-EFI: debug point DXE_AP
-EFI: VBoxDbg> loadimage64 'PciHostBridgeDxe.efi' ...
-```
-
-- Como Hyper-V está activo (por WSL2 y Docker), VirtualBox no puede usar VT-x directamente y funciona **a través de Hyper-V (NEM)**: es la tortuga verde de la barra de estado.
-- El firmware UEFI de la VM se colgaba al inicializar la **segunda CPU virtual** (`DXE_AP`) y no pasaba de `PciHostBridgeDxe.efi`, aunque la VM estuviera horas encendida.
-
-**Solución:** `vb.cpus = 1`. Con una sola vCPU el firmware arranca, Windows carga en menos de un minuto y Vagrant conecta por WinRM:
+**3. El equipo no llegaba a las VMs por VMnet1** (en `arp -a` aparecían como `Incomplete`). El adaptador virtual del equipo no tenía conectividad de capa 2. Se arregló reiniciando el adaptador y poniéndole la IP del equipo en la red del lab (PowerShell como administrador):
 
 ```powershell
-vagrant halt DC01 --force   # apagado forzado: Windows ni había arrancado
-vagrant up DC01
+Disable-NetAdapter -Name "VMware Network Adapter VMnet1" -Confirm:$false
+Enable-NetAdapter  -Name "VMware Network Adapter VMnet1"
+New-NetIPAddress -InterfaceAlias "VMware Network Adapter VMnet1" -IPAddress 192.168.56.1 -PrefixLength 24
 ```
+
+Si vuelve a fallar la red del lab, es lo primero que miro: que VMnet1 tenga `192.168.56.1` y que `arp -a` resuelva las VMs.
+
+**4. Vagrant no configura `private_network` en invitados Windows con VMware:**
+
+```
+Configuring secondary network adapters through VMware
+on Windows is not yet supported. You will need to manually
+configure the network adapter.
+```
+
+Lo resuelve el provisioner `lab-ip`. El `private_network` del Vagrantfile se queda, porque es lo que hace que VMware añada la segunda NIC conectada a VMnet1.
 
 ### Paso 4 — Nodo de control Ansible en WSL y primer contacto con DC01
 
@@ -256,7 +283,7 @@ ansible all -i '192.168.56.10,' -m ansible.windows.win_ping \
 }
 ```
 
-La cadena completa funciona: WSL → red host-only de VirtualBox → WinRM → Windows Server. La coma de `-i '192.168.56.10,'` es necesaria: le dice a Ansible que es una lista de hosts y no la ruta a un fichero de inventario.
+La cadena completa funciona: WSL → red host-only VMnet1 → WinRM → Windows Server. La coma de `-i '192.168.56.10,'` es necesaria: le dice a Ansible que es una lista de hosts y no la ruta a un fichero de inventario.
 
 > Pasar la contraseña por la línea de comandos solo vale para esta prueba: queda en el historial de la shell. En el siguiente paso la conexión pasa a un inventario y la contraseña a Ansible Vault.
 
@@ -376,10 +403,10 @@ group_vars/domain_controllers/vault.yml  → vault_ad_dsrm_password (cifrado)
 
 | # | Tarea | Módulo | Por qué |
 |---|---|---|---|
-| 1 | Las NIC que no son del lab no se registran en DNS | `win_powershell` | La VM tiene dos NIC: NAT (`10.0.2.15`, la de Vagrant) y la del lab. Si el DC registra la IP NAT, los clientes intentan contactar con una IP inalcanzable |
+| 1 | Las NIC que no son del lab no se registran en DNS | `win_powershell` | La VM tiene dos NIC: NAT (`192.168.133.x`, la de Vagrant) y la del lab. Si el DC registra la IP NAT, los clientes intentan contactar con una IP inalcanzable |
 | 2 | Instalar el rol AD DS | `win_feature` | Requisito previo de la promoción |
 | 3 | Reiniciar solo si hace falta | `win_reboot` + `when` | |
-| 4 | Crear el bosque | `microsoft.ad.domain` | Equivale a `Install-ADDSForest`: crea `lab.local`, instala DNS y reinicia. `reboot_timeout: 1800` (ver problemas) |
+| 4 | Crear el bosque | `microsoft.ad.domain` | Equivale a `Install-ADDSForest`: crea `lab.local`, instala DNS y reinicia. `reboot_timeout: 1800` deja margen, porque el primer arranque como DC puede superar los 10 minutos que el módulo espera por defecto |
 | 5 | Esperar a que AD responda | `win_powershell` + `until`/`retries` | Tras el reinicio AD tarda en estar disponible |
 | 6 | Servidor DNS escuchando solo en la IP del lab | `win_powershell` | Ver problemas |
 | 7 | Eliminar registros A fuera de la red del lab | `win_powershell` | Limpia `lab.local` y `_msdcs.lab.local` |
@@ -411,8 +438,8 @@ ansible-playbook playbooks/01-deploy-forest.yml
 "Rol": "Controlador de dominio (PDC)",
 "AD_DS": "Installed",  "DNS": "Installed",
 "NICs": [
-    "Ethernet 2  192.168.56.10  registra_en_DNS=True",
-    "Ethernet  10.0.2.15  registra_en_DNS=False"
+    "Ethernet0  192.168.133.129  registra_en_DNS=False",
+    "Ethernet1  192.168.56.10  registra_en_DNS=True"
 ]
 ```
 
@@ -435,18 +462,9 @@ Una segunda ejecución del playbook termina con `changed=0`: el rol es idempoten
 
 **2. Erratas en nombres de módulos y variables** (`win_reeboot`, `reebot_required`). `--syntax-check` detecta un módulo inexistente, pero no una variable mal escrita, que solo falla al ejecutar. La extensión de Ansible para VS Code y `ansible-doc <módulo>` ayudan a evitarlas.
 
-**3. Timeout en el reinicio tras la promoción.**
+**3. `dc01.lab.local` registrado también con la IP NAT (`192.168.133.129`).** Aunque la tarea 1 desactiva el registro del *cliente* DNS en la NIC NAT, el *servidor* DNS registra un registro A por cada IP en la que escucha, y por defecto escucha en todas. Solución en el rol: limitar las IPs de escucha del servidor DNS a la del lab (`dnscmd /ResetListenAddresses`) y eliminar los registros A que apunten fuera de la red del lab. Lo detecté consultando la zona después de la promoción, no por un error: por eso la verificación forma parte del paso.
 
-```
-Failed to reboot after module returned reboot_required ...
-Timed out waiting for last boot time check (timeout=600)
-```
-
-El bosque se creó bien, pero el primer arranque como DC (con 1 vCPU y VirtualBox sobre Hyper-V) tardó más de los 10 minutos que espera el módulo por defecto. Solución: `reboot_timeout: 1800` en `microsoft.ad.domain`. Como el rol es idempotente, al relanzar el playbook continuó donde se había quedado.
-
-**4. `dc01.lab.local` registrado también con la IP NAT (`10.0.2.15`).** Aunque la tarea 1 desactiva el registro del *cliente* DNS en la NIC NAT, el *servidor* DNS registra un registro A por cada IP en la que escucha, y por defecto escucha en todas. Solución en el rol: limitar las IPs de escucha del servidor DNS a la del lab (`dnscmd /ResetListenAddresses`) y eliminar los registros A que apunten fuera de la red del lab. Lo detecté consultando la zona después de la promoción, no por un error: por eso la verificación forma parte del paso.
-
-**5. La tarea 6 devolvía `changed` en cada ejecución (no era idempotente).** Lo detectó la segunda ejecución del playbook: la tarea reconfiguraba y reiniciaba el servicio DNS cada vez, aunque ya estuviera bien. El diagnóstico:
+**4. La tarea 6 devolvía `changed` en cada ejecución (no era idempotente).** Lo detectó la segunda ejecución del playbook: la tarea reconfiguraba y reiniciaba el servicio DNS cada vez, aunque ya estuviera bien. El diagnóstico:
 
 ```bash
 ansible DC01 -m ansible.windows.win_shell -a '(Get-DnsServerSetting -All).ListeningIPAddress | ForEach-Object { "$_ (" + $_.AddressFamily + ")" }'
@@ -461,6 +479,8 @@ $current = @((Get-DnsServerSetting -All).ListeningIPAddress | ForEach-Object { "
 
 Ahora el playbook completo termina con `changed=0` en ejecuciones sucesivas.
 
+**5. `--check` decía `changed` pero DC01 seguía en `WORKGROUP`.** La salida de la simulación marcaba como cambiadas *Instalar el rol AD DS* y *Crear el bosque*, y llegué a pensar que el dominio ya estaba creado. Es lo esperado, porque **`--check` solo simula**: informa de lo que cambiaría, pero no cambia nada. Ni siquiera la tarea *Esperar a que Active Directory responda* llega a ejecutarse (sale `ok` por su `changed_when: false`). Lo delataron dos detalles: la VM no se había reiniciado, aunque crear el bosque lleva `reboot: true`, y `00-estado-dc.yml` seguía mostrando `Servidor independiente`. Para saber si un cambio se aplicó de verdad hay que verificar el estado después, no fiarse de la salida de un `--check`.
+
 **Bosque resultante** (`Get-ADForest`):
 
 ```
@@ -472,122 +492,6 @@ SchemaMaster       : DC01.lab.local
 DomainNamingMaster : DC01.lab.local
 Sites              : {Default-First-Site-Name}
 ```
-
-### Cambio de VirtualBox a VMware Workstation
-
-**Por qué.** En mi equipo el hipervisor de Windows está siempre activo (WSL2, Docker) y no he conseguido desactivarlo. Con él, VirtualBox 7.2 no usa VT-x y funciona a través de Hyper-V (NEM). El log de la VM lo dejaba claro:
-
-```
-Snail execution mode is active!
-```
-
-Era el modo más lento posible: solo arrancaba con 1 vCPU (problema 2 del Paso 3), el primer arranque como DC tardó más de 10 minutos (problema 3 del Paso 6) y DC02 no llegaba a responder por WinRM. Para un lab con 3 o más VMs no era viable.
-
-**Antes de cambiar, intenté desactivar el hipervisor.** Con el hipervisor apagado, VirtualBox usaría VT-x directamente y admitiría varias CPU. Probé, por orden:
-
-| Intento | Comando | Resultado |
-|---|---|---|
-| Desactivar el hipervisor en el arranque | `bcdedit /set hypervisorlaunchtype off` | `HypervisorPresent` seguía en `True` |
-| Ver qué lo mantenía | `Get-CimInstance Win32_DeviceGuard -Namespace root\Microsoft\Windows\DeviceGuard` | `VirtualizationBasedSecurityStatus = 2`: **VBS** activo, sin servicios de seguridad (`SecurityServicesRunning = {0}`) |
-| Apagar VBS por registro | `HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\EnableVirtualizationBasedSecurity = 0` | Sin cambios |
-| Apagar VBS en el arranque | `bcdedit /set "{current}" vsmlaunchtype off` | Sin cambios |
-| Entrada de arranque separada para el lab | `bcdedit /copy "{current}" /d "Windows 11 - Lab VirtualBox"` | El hipervisor seguía presente y, además, **WSL2 dejó de arrancar** en esa entrada (`HCS_E_SERVICE_NOT_AVAILABLE`) |
-
-Conclusiones:
-
-- Al comprobar el estado hay que mirar **las dos cosas**: `(Get-CimInstance Win32_ComputerSystem).HypervisorPresent` y el estado de VBS. `bcdedit` puede decir `Off` y el hipervisor seguir cargado.
-- `bcdedit` sin PowerShell de administrador **no muestra nada** (ni error), lo que lleva a conclusiones falsas. Y en PowerShell los identificadores van entre comillas: `"{current}"`, `"{default}"`; sin ellas, PowerShell interpreta las llaves como un bloque de código.
-- Aunque lo hubiera conseguido, el coste era alto: sin hipervisor no funcionan WSL2 (donde vive Ansible) ni Docker. La solución correcta era un hipervisor que conviva con el de Windows, y por eso cambié a VMware.
-
-**Qué instalé:**
-
-| Herramienta | Versión |
-|---|---|
-| VMware Workstation Pro | 26.0.1 (gratuito para uso personal) |
-| Plugin `vagrant-vmware-desktop` | 3.0.5 |
-| Vagrant VMware Utility | 1.0.24 (servicio de Windows que hace de puente entre Vagrant y VMware) |
-
-```powershell
-vagrant plugin install vagrant-vmware-desktop
-vagrant box add gusztavvargadr/windows-server-2022-standard --provider vmware_desktop --box-version 2607.0.0
-```
-
-Con VMware sobre el hipervisor de Windows las VMs arrancan en pocos minutos y funcionan con 2 vCPU.
-
-**Cambios en el Vagrantfile.** Cada VM tiene ahora un bloque `vmware_desktop`, que es el proveedor principal. Dejo el de `virtualbox` como alternativa:
-
-```ruby
-config.vm.provision "lab-tuning", type: "shell", path: "scripts/Optimize-LabGuest.ps1"
-
-config.vm.define "DC01" do |dc|
-  dc.vm.hostname = "DC01"
-  dc.vm.network "private_network", ip: "192.168.56.10"
-  dc.vm.provision "lab-ip", type: "shell", path: "scripts/Set-LabIP.ps1", args: ["-IPAddress", "192.168.56.10"]
-  dc.vm.provider "vmware_desktop" do |vm|
-    vm.vmx["displayName"] = "lab-DC01"
-    vm.memory       = 4096
-    vm.cpus         = 2
-    vm.linked_clone = true
-  end
-end
-```
-
-```powershell
-vagrant up DC01 --provider vmware_desktop
-```
-
-Dos provisioners nuevos:
-
-- **`lab-ip`** ([`scripts/Set-LabIP.ps1`](scripts/Set-LabIP.ps1)): pone la IP fija del lab en la NIC host-only (ver problema 4). Identifica la NIC NAT porque es la que tiene la ruta por defecto, y configura la otra.
-- **`lab-tuning`** ([`scripts/Optimize-LabGuest.ps1`](scripts/Optimize-LabGuest.ps1)): desactiva Windows Update y el análisis en tiempo real de Defender. Así las VMs consumen menos CPU y disco. **Solo para el laboratorio.**
-
-La NIC NAT de VMware está en `192.168.133.0/24`, así que la IP NAT de las VMs ya no es `10.0.2.15`. El rol `ad_forest` no depende de esa IP: decide qué es "del lab" a partir de `ansible_host`.
-
-#### Problemas que me encontré
-
-**1. La Vagrant VMware Utility no reconoce VMware Workstation 26.** Primero el instalador `.msi` se negaba a instalar (*requires a valid installation of VMware Workstation*) aunque Workstation estaba instalado; después, el servicio `VagrantVMware` no arrancaba, y su log (`C:\ProgramData\HashiCorp\vagrant-vmware-desktop\logs\utility.log`) decía:
-
-```
-[ERROR] failed to generate VMware installation information: error="El sistema no puede encontrar el archivo especificado."
-```
-
-La causa: Workstation 26 es la primera versión totalmente de 64 bits y registra su instalación en la vista de 64 bits del registro (`HKLM\SOFTWARE\VMware, Inc.`), mientras que la utilidad 1.0.24 solo la busca en la vista de 32 bits (`WOW6432Node`). Es un fallo conocido ([issue #177](https://github.com/hashicorp/vagrant-vmware-desktop/issues/177), con arreglo propuesto en el [PR #182](https://github.com/hashicorp/vagrant-vmware-desktop/pull/182)). Mientras no se publique, lo resuelve copiar la clave y añadir el valor `Core` (PowerShell como administrador):
-
-```powershell
-reg copy "HKLM\SOFTWARE\VMware, Inc.\VMware Workstation" "HKLM\SOFTWARE\WOW6432Node\VMware, Inc.\VMware Workstation" /s /f
-reg add  "HKLM\SOFTWARE\WOW6432Node\VMware, Inc." /v Core /t REG_SZ /d "VMware Workstation" /f
-net start VagrantVMware
-```
-
-Con solo la copia de la clave, el instalador ya acepta Workstation, pero el servicio no arranca: hace falta también `Core`. Cuando funciona, el log termina con `api service start: host=127.0.0.1 port=9922`. Por el camino también usé *Restore Defaults* en el Editor de red virtual para regenerar las redes VMnet.
-
-**2. Vagrant no puede crear la red host-only** (`POST /vmnet` → `400`). Creé la red a mano en el Editor de red virtual: **VMnet1**, host-only, `192.168.56.0/24`, **sin DHCP**.
-
-**3. El equipo no llegaba a las VMs por VMnet1** (en `arp -a` aparecían como `Incomplete`). El adaptador virtual del equipo no tenía conectividad de capa 2. Se arregló reiniciando el adaptador y poniéndole la IP del equipo en la red del lab (PowerShell como administrador):
-
-```powershell
-Disable-NetAdapter -Name "VMware Network Adapter VMnet1" -Confirm:$false
-Enable-NetAdapter  -Name "VMware Network Adapter VMnet1"
-New-NetIPAddress -InterfaceAlias "VMware Network Adapter VMnet1" -IPAddress 192.168.56.1 -PrefixLength 24
-```
-
-Si vuelve a fallar la red del lab, es lo primero que miro: que VMnet1 tenga `192.168.56.1` y que `arp -a` resuelva las VMs.
-
-**4. Vagrant no configura `private_network` en invitados Windows con VMware:**
-
-```
-Configuring secondary network adapters through VMware
-on Windows is not yet supported. You will need to manually
-configure the network adapter.
-```
-
-Lo resuelve el provisioner `lab-ip`. El `private_network` del Vagrantfile se queda, porque es lo que hace que VMware añada la segunda NIC conectada a VMnet1.
-
-#### DC01 recreado desde cero
-
-La VM de VMware es nueva, así que DC01 volvía a ser un servidor independiente en `WORKGROUP`. Vino bien para comprobar que el Paso 6 es reproducible: el mismo playbook, sin tocar nada, dejó DC01 como controlador de `lab.local`.
-
-Me llevé una confusión que conviene recordar. Lancé primero el playbook con `--check`: la salida decía `changed` en *Instalar el rol AD DS* y *Crear el bosque*, pero DC01 seguía en `WORKGROUP`. Es lo esperado, porque **`--check` solo simula**: informa de lo que cambiaría, pero no cambia nada. Ni siquiera la tarea *Esperar a que Active Directory responda* llega a ejecutarse (sale `ok` por su `changed_when: false`). Para saber si un cambio se aplicó de verdad, hay que verificar el estado después, con `00-estado-dc.yml`, y no fiarse de la salida de un `--check`.
 
 ### Paso 7 — DC02: dominio hijo `emea.lab.local`
 

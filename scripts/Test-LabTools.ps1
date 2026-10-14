@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-  Muestra las versiones de las herramientas del lab (VirtualBox, Vagrant, Docker, Git, WSL).
+  Muestra las versiones de las herramientas del lab (VMware Workstation, Vagrant, Docker, Git, WSL).
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File .\scripts\Test-LabTools.ps1
 #>
@@ -11,13 +11,15 @@ function Get-ToolVersion {
     catch { 'NO INSTALADO' }
 }
 
-$vbox = Join-Path $env:ProgramFiles 'Oracle\VirtualBox\VBoxManage.exe'
+$vmware = Join-Path $env:ProgramFiles 'VMware\VMware Workstation\vmware.exe'
 
 $tools = @(
-    [pscustomobject]@{ Herramienta = 'VirtualBox'; Version = Get-ToolVersion { & $vbox --version } }
-    [pscustomobject]@{ Herramienta = 'Vagrant';    Version = Get-ToolVersion { vagrant --version } 'Vagrant ' }
-    [pscustomobject]@{ Herramienta = 'Docker';     Version = Get-ToolVersion { docker --version } 'Docker version ' }
-    [pscustomobject]@{ Herramienta = 'Git';        Version = Get-ToolVersion { git --version } 'git version ' }
+    [pscustomobject]@{ Herramienta = 'VMware Workstation'; Version = Get-ToolVersion { (Get-Item $vmware -ErrorAction Stop).VersionInfo.ProductVersion } }
+    [pscustomobject]@{ Herramienta = 'Vagrant';            Version = Get-ToolVersion { vagrant --version } 'Vagrant ' }
+    [pscustomobject]@{ Herramienta = 'Plugin VMware';      Version = Get-ToolVersion { vagrant plugin list | Select-String 'vagrant-vmware-desktop' } '^vagrant-vmware-desktop ' }
+    [pscustomobject]@{ Herramienta = 'Servicio VagrantVMware'; Version = Get-ToolVersion { (Get-Service VagrantVMware -ErrorAction Stop).Status } }
+    [pscustomobject]@{ Herramienta = 'Docker';             Version = Get-ToolVersion { docker --version } 'Docker version ' }
+    [pscustomobject]@{ Herramienta = 'Git';                Version = Get-ToolVersion { git --version } 'git version ' }
 )
 
 Write-Host "`n=== Herramientas del lab ===" -ForegroundColor Cyan

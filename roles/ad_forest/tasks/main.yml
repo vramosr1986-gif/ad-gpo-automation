@@ -1,4 +1,8 @@
 ---
+# Promoción de DCs: el grupo del inventario decide el tipo de dominio.
+#   dc_root  → crea el bosque (microsoft.ad.domain)
+#   dc_child → crea un dominio hijo en el bosque existente (microsoft.ad.domain_child)
+
 - name: Evitar que las NIC que no son del lab se registren en DNS
   ansible.windows.win_powershell:
     script: |
@@ -10,6 +14,22 @@
           Set-DnsClient -InterfaceIndex $_.InterfaceIndex -RegisterThisConnectionsAddress $false
           $Ansible.Changed = $true
         }
+
+- name: Resolver DNS con el DC del dominio padre
+  ansible.windows.win_powershell:
+    script: |
+      param([string[]]$Servers)
+      $Ansible.Changed = $false
+      Get-NetAdapter | Where-Object Status -eq 'Up' | ForEach-Object {
+        $current = @((Get-DnsClientServerAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4).ServerAddresses)
+        if (($current -join ',') -ne ($Servers -join ',')) {
+          Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ServerAddresses $Servers
+          $Ansible.Changed = $true
+        }
+      }
+    parameters:
+      Servers: "{{ ad_dns_servers }}"
+  when: "'dc_child' in group_names"
 
 - name: Instalar el rol AD DS y sus herramientas
   ansible.windows.win_feature:
@@ -32,6 +52,20 @@
     install_dns: true
     reboot: true
     reboot_timeout: 1800
+  when: "'dc_root' in group_names"
+
+- name: Crear el dominio hijo {{ ad_dc_domain }}
+  microsoft.ad.domain_child:
+    dns_domain_name: "{{ ad_dc_domain }}"
+    domain_admin_user: "{{ ad_enterprise_admin_user }}"
+    domain_admin_password: "{{ ad_enterprise_admin_password }}"
+    safe_mode_password: "{{ ad_dsrm_password }}"
+    domain_mode: "{{ ad_domain_mode }}"
+    install_dns: true
+    create_dns_delegation: true
+    reboot: true
+    reboot_timeout: 1800
+  when: "'dc_child' in group_names"
 
 - name: Esperar a que Active Directory responda
   ansible.windows.win_powershell:
@@ -42,7 +76,6 @@
   delay: 20
   changed_when: false
 
-  
 - name: Servidor DNS escuchando solo en la IP del lab
   ansible.windows.win_powershell:
     script: |
@@ -60,7 +93,7 @@
     script: |
       $labPrefix = '{{ ansible_host.rsplit(".", 1)[0] }}.*'
       $Ansible.Changed = $false
-      foreach ($zone in @('{{ ad_domain_name }}', '_msdcs.{{ ad_domain_name }}')) {
+      foreach ($zone in @('{{ ad_dc_domain }}', '_msdcs.{{ ad_domain_name }}')) {
         Get-DnsServerResourceRecord -ZoneName $zone -RRType A -ErrorAction SilentlyContinue |
           Where-Object { $_.RecordData.IPv4Address.IPAddressToString -notlike $labPrefix } |
           ForEach-Object {
@@ -68,3 +101,22 @@
             $Ansible.Changed = $true
           }
       }
+
+# La delegación del dominio hijo crea en la zona del padre un registro glue por
+# cada IP del DC hijo, también la NAT. Esa zona solo está en el DC del padre.
+- name: Eliminar registros glue fuera de la red del lab en la zona del padre
+  ansible.windows.win_powershell:
+    script: |
+      $labPrefix = '{{ ansible_host.rsplit(".", 1)[0] }}.*'
+      $zone = '{{ ad_dc_domain.split(".", 1)[1] }}'
+      $Ansible.Changed = $false
+      Get-DnsServerResourceRecord -ZoneName $zone -RRType A |
+        Where-Object { $_.HostName -like '*.{{ ad_child_name }}' -and
+                       $_.RecordData.IPv4Address.IPAddressToString -notlike $labPrefix } |
+        ForEach-Object {
+          Remove-DnsServerResourceRecord -ZoneName $zone -InputObject $_ -Force
+          $Ansible.Changed = $true
+        }
+  # delegate_to se evalúa antes que when: el default evita el fallo en el DC raíz
+  delegate_to: "{{ ad_parent_dc | default(inventory_hostname) }}"
+  when: "'dc_child' in group_names"

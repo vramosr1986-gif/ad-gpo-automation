@@ -1,0 +1,27 @@
+DC02 | CHANGED | rc=0 >>
+
+
+Name               : lab.local
+ForestMode         : Windows2016Forest
+Domains            : {emea.lab.local, lab.local}
+GlobalCatalogs     : {DC01.lab.local, DC02.emea.lab.local}
+SchemaMaster       : DC01.lab.local
+DomainNamingMaster : DC01.lab.local
+
+
+
+
+
+Target      : lab.local
+Direction   : BiDirectional
+TrustType   : Uplevel
+IntraForest : True
+
+
+
+Flags: b0 HAS_IP  HAS_TIMESERV 
+Trusted DC Name \\DC01.lab.local 
+Trusted DC Connection Status Status = 0 0x0 NERR_Success
+Trust Verification Status = 0 0x0 NERR_Success
+The command completed successfully
+

@@ -1,0 +1,39 @@
+
+PLAY [Estado de los controladores de dominio] **********************************
+
+TASK [Recoger el estado del servidor] ******************************************
+ok: [DC01]
+ok: [DC02]
+
+TASK [Mostrar el estado] *******************************************************
+ok: [DC01] => {
+    "estado.output[0]": {
+        "AD_DS": "Installed",
+        "DNS": "Installed",
+        "Dominio": "lab.local",
+        "Equipo": "DC01",
+        "NICs": [
+            "Ethernet0  192.168.133.129  registra_en_DNS=False",
+            "Ethernet1  192.168.56.10  registra_en_DNS=True"
+        ],
+        "Rol": "Controlador de dominio (PDC)"
+    }
+}
+ok: [DC02] => {
+    "estado.output[0]": {
+        "AD_DS": "Installed",
+        "DNS": "Installed",
+        "Dominio": "emea.lab.local",
+        "Equipo": "DC02",
+        "NICs": [
+            "Ethernet1  192.168.56.11  registra_en_DNS=True",
+            "Ethernet0  192.168.133.130  registra_en_DNS=False"
+        ],
+        "Rol": "Controlador de dominio (PDC)"
+    }
+}
+
+PLAY RECAP *********************************************************************
+DC01                       : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+DC02                       : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+

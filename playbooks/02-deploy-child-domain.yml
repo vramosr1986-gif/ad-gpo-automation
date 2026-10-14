@@ -1,0 +1,17 @@
+---
+- name: Preparar el bosque para el dominio hijo
+  hosts: dc_root
+  gather_facts: false
+  tasks:
+    - name: La cuenta de automatización pertenece a Enterprise Admins
+      microsoft.ad.group:
+        name: Enterprise Admins
+        members:
+          add:
+            - vagrant
+
+- name: Desplegar el dominio hijo
+  hosts: dc_child
+  gather_facts: false
+  roles:
+    - ad_forest

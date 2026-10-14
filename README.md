@@ -25,7 +25,10 @@ El objetivo no es un alta masiva desde CSV, sino gestionar el **ciclo de vida co
 - [x] Paso 4 — Nodo de control Ansible en WSL y primer `win_ping`
 - [x] Paso 5 — Inventario y credenciales cifradas con Ansible Vault
 - [x] Paso 6 — Promoción de DC01 a controlador de dominio (`lab.local`) con Ansible
+- [x] Cambio de VirtualBox a VMware Workstation
 - [ ] Paso 7 — DC02 (dominio hijo) y SRV01 (servidor miembro)
+  - [x] DC02: dominio hijo `emea.lab.local`
+  - [ ] SRV01: servidor miembro
 
 **Fases de automatización** (cuando el entorno esté listo)
 
@@ -43,6 +46,8 @@ El objetivo no es un alta masiva desde CSV, sino gestionar el **ciclo de vida co
 **Mi equipo:** Windows 11 Home, i7-13700HX, 32 GB de RAM, con WSL2 (Ubuntu 24.04) ya funcionando.
 
 Windows 11 Home no trae Hyper-V Manager, así que las VMs del lab las monto con **VirtualBox** y las defino con **Vagrant**, para poder recrearlas cuando quiera. Además he instalado **Docker Desktop** (usa WSL2 como backend) y **Git**.
+
+> **Actualización:** después del Paso 6 cambié VirtualBox por **VMware Workstation Pro**, porque con el hipervisor de Windows activo VirtualBox era demasiado lento. Los pasos 1 a 6 cuentan el montaje original con VirtualBox; el motivo y los cambios están en [Cambio de VirtualBox a VMware Workstation](#cambio-de-virtualbox-a-vmware-workstation).
 
 Instalé todo con `winget` desde una PowerShell como administrador:
 
@@ -383,11 +388,13 @@ group_vars/domain_controllers/vault.yml  → vault_ad_dsrm_password (cifrado)
 
 ```yaml
 - name: Desplegar el bosque de Active Directory
-  hosts: domain_controllers
+  hosts: dc_root
   gather_facts: false
   roles:
     - ad_forest
 ```
+
+`dc_root` es un subgrupo de `domain_controllers` que solo contiene a DC01; DC02 va en `dc_child` (ver Paso 7). Al principio el playbook apuntaba a `domain_controllers`, pero cuando añadí DC02 al inventario lo habría intentado convertir también en raíz de un bosque.
 
 **Ejecución.** Antes, una simulación con `--check --diff` (el equivalente a un `terraform plan`), y después la ejecución real:
 
@@ -465,6 +472,268 @@ SchemaMaster       : DC01.lab.local
 DomainNamingMaster : DC01.lab.local
 Sites              : {Default-First-Site-Name}
 ```
+
+### Cambio de VirtualBox a VMware Workstation
+
+**Por qué.** En mi equipo el hipervisor de Windows está siempre activo (WSL2, Docker) y no he conseguido desactivarlo. Con él, VirtualBox 7.2 no usa VT-x y funciona a través de Hyper-V (NEM). El log de la VM lo dejaba claro:
+
+```
+Snail execution mode is active!
+```
+
+Era el modo más lento posible: solo arrancaba con 1 vCPU (problema 2 del Paso 3), el primer arranque como DC tardó más de 10 minutos (problema 3 del Paso 6) y DC02 no llegaba a responder por WinRM. Para un lab con 3 o más VMs no era viable.
+
+**Qué instalé:**
+
+| Herramienta | Versión |
+|---|---|
+| VMware Workstation Pro | 26.0.1 (gratuito para uso personal) |
+| Plugin `vagrant-vmware-desktop` | 3.0.5 |
+| Vagrant VMware Utility | 1.0.24 (servicio de Windows que hace de puente entre Vagrant y VMware) |
+
+```powershell
+vagrant plugin install vagrant-vmware-desktop
+vagrant box add gusztavvargadr/windows-server-2022-standard --provider vmware_desktop --box-version 2607.0.0
+```
+
+Con VMware sobre el hipervisor de Windows las VMs arrancan en pocos minutos y funcionan con 2 vCPU.
+
+**Cambios en el Vagrantfile.** Cada VM tiene ahora un bloque `vmware_desktop`, que es el proveedor principal. Dejo el de `virtualbox` como alternativa:
+
+```ruby
+config.vm.provision "lab-tuning", type: "shell", path: "scripts/Optimize-LabGuest.ps1"
+
+config.vm.define "DC01" do |dc|
+  dc.vm.hostname = "DC01"
+  dc.vm.network "private_network", ip: "192.168.56.10"
+  dc.vm.provision "lab-ip", type: "shell", path: "scripts/Set-LabIP.ps1", args: ["-IPAddress", "192.168.56.10"]
+  dc.vm.provider "vmware_desktop" do |vm|
+    vm.vmx["displayName"] = "lab-DC01"
+    vm.memory       = 4096
+    vm.cpus         = 2
+    vm.linked_clone = true
+  end
+end
+```
+
+```powershell
+vagrant up DC01 --provider vmware_desktop
+```
+
+Dos provisioners nuevos:
+
+- **`lab-ip`** ([`scripts/Set-LabIP.ps1`](scripts/Set-LabIP.ps1)): pone la IP fija del lab en la NIC host-only (ver problema 4). Identifica la NIC NAT porque es la que tiene la ruta por defecto, y configura la otra.
+- **`lab-tuning`** ([`scripts/Optimize-LabGuest.ps1`](scripts/Optimize-LabGuest.ps1)): desactiva Windows Update y el análisis en tiempo real de Defender. Así las VMs consumen menos CPU y disco. **Solo para el laboratorio.**
+
+La NIC NAT de VMware está en `192.168.133.0/24`, así que la IP NAT de las VMs ya no es `10.0.2.15`. El rol `ad_forest` no depende de esa IP: decide qué es "del lab" a partir de `ansible_host`.
+
+#### Problemas que me encontré
+
+**1. El servicio `VagrantVMware` no arrancaba** (`failed to generate VMware installation information`). La utilidad no encontraba la instalación de VMware Workstation 26. Lo arreglé con *Restore Defaults* en el Editor de red virtual de VMware y copiando la clave de registro de la instalación de VMware a `WOW6432Node`, donde la busca la utilidad.
+
+**2. Vagrant no puede crear la red host-only** (`POST /vmnet` → `400`). Creé la red a mano en el Editor de red virtual: **VMnet1**, host-only, `192.168.56.0/24`, **sin DHCP**.
+
+**3. El equipo no llegaba a las VMs por VMnet1** (en `arp -a` aparecían como `Incomplete`). El adaptador virtual del equipo no tenía conectividad de capa 2. Se arregló reiniciando el adaptador y poniéndole la IP del equipo en la red del lab (PowerShell como administrador):
+
+```powershell
+Disable-NetAdapter -Name "VMware Network Adapter VMnet1" -Confirm:$false
+Enable-NetAdapter  -Name "VMware Network Adapter VMnet1"
+New-NetIPAddress -InterfaceAlias "VMware Network Adapter VMnet1" -IPAddress 192.168.56.1 -PrefixLength 24
+```
+
+Si vuelve a fallar la red del lab, es lo primero que miro: que VMnet1 tenga `192.168.56.1` y que `arp -a` resuelva las VMs.
+
+**4. Vagrant no configura `private_network` en invitados Windows con VMware:**
+
+```
+Configuring secondary network adapters through VMware
+on Windows is not yet supported. You will need to manually
+configure the network adapter.
+```
+
+Lo resuelve el provisioner `lab-ip`. El `private_network` del Vagrantfile se queda, porque es lo que hace que VMware añada la segunda NIC conectada a VMnet1.
+
+#### DC01 recreado desde cero
+
+La VM de VMware es nueva, así que DC01 volvía a ser un servidor independiente en `WORKGROUP`. Vino bien para comprobar que el Paso 6 es reproducible: el mismo playbook, sin tocar nada, dejó DC01 como controlador de `lab.local`.
+
+Me llevé una confusión que conviene recordar. Lancé primero el playbook con `--check`: la salida decía `changed` en *Instalar el rol AD DS* y *Crear el bosque*, pero DC01 seguía en `WORKGROUP`. Es lo esperado, porque **`--check` solo simula**: informa de lo que cambiaría, pero no cambia nada. Ni siquiera la tarea *Esperar a que Active Directory responda* llega a ejecutarse (sale `ok` por su `changed_when: false`). Para saber si un cambio se aplicó de verdad, hay que verificar el estado después, con `00-estado-dc.yml`, y no fiarse de la salida de un `--check`.
+
+### Paso 7 — DC02: dominio hijo `emea.lab.local`
+
+Segundo dominio del bosque: DC02 (Windows Server 2022 **Core**, sin escritorio) se convierte en el primer controlador de `emea.lab.local`, hijo de `lab.local`. Entre los dos dominios se crea automáticamente una confianza bidireccional y transitiva.
+
+**Inventario.** Dentro de `domain_controllers` hay dos subgrupos, y el grupo decide qué tipo de dominio crea el rol:
+
+```yaml
+domain_controllers:
+  children:
+    dc_root:              # crea el bosque
+      hosts:
+        DC01: { ansible_host: 192.168.56.10 }
+    dc_child:             # crea un dominio hijo
+      hosts:
+        DC02: { ansible_host: 192.168.56.11 }
+```
+
+**Variables del dominio hijo** (`group_vars/dc_child/vars.yml`):
+
+```yaml
+ad_child_name: emea
+ad_dc_domain: "{{ ad_child_name }}.{{ ad_domain_name }}"     # emea.lab.local
+ad_parent_dc: DC01
+
+# Antes de promoverse, el DC hijo resuelve lab.local con DC01; después, también consigo mismo
+ad_dns_servers:
+  - "{{ hostvars[ad_parent_dc].ansible_host }}"
+  - "{{ ansible_host }}"
+
+# Crear un dominio hijo exige una cuenta de Enterprise Admins del bosque
+ad_enterprise_admin_user: "vagrant@{{ ad_domain_name }}"
+ad_enterprise_admin_password: "{{ vault_windows_password }}"
+```
+
+En `group_vars/dc_root/vars.yml`, `ad_dc_domain` es simplemente `lab.local`. Así las tareas comunes del rol usan `ad_dc_domain` sin saber en qué DC están.
+
+**El rol `ad_forest` ampliado.** Las tareas nuevas o cambiadas solo se ejecutan en `dc_child` (`when: "'dc_child' in group_names"`):
+
+| # | Tarea | Módulo | Raíz | Hijo |
+|---|---|---|:-:|:-:|
+| 1 | Las NIC que no son del lab no se registran en DNS | `win_powershell` | ✓ | ✓ |
+| 2 | **Resolver DNS con el DC del dominio padre** | `win_powershell` | | ✓ |
+| 3 | Instalar el rol AD DS | `win_feature` | ✓ | ✓ |
+| 4 | Reiniciar solo si hace falta | `win_reboot` | ✓ | ✓ |
+| 5 | Crear el bosque | `microsoft.ad.domain` | ✓ | |
+| 6 | **Crear el dominio hijo** | `microsoft.ad.domain_child` | | ✓ |
+| 7 | Esperar a que AD responda | `win_powershell` | ✓ | ✓ |
+| 8 | Servidor DNS escuchando solo en la IP del lab | `win_powershell` | ✓ | ✓ |
+| 9 | Eliminar registros A fuera de la red del lab (zonas `ad_dc_domain` y `_msdcs.lab.local`) | `win_powershell` | ✓ | ✓ |
+| 10 | **Eliminar registros glue fuera de la red del lab en la zona del padre** (se ejecuta en DC01) | `win_powershell` + `delegate_to` | | ✓ |
+
+La promoción del hijo:
+
+```yaml
+- name: Crear el dominio hijo {{ ad_dc_domain }}
+  microsoft.ad.domain_child:
+    dns_domain_name: "{{ ad_dc_domain }}"          # el padre se deduce del nombre
+    domain_admin_user: "{{ ad_enterprise_admin_user }}"
+    domain_admin_password: "{{ ad_enterprise_admin_password }}"
+    safe_mode_password: "{{ ad_dsrm_password }}"
+    domain_mode: "{{ ad_domain_mode }}"
+    install_dns: true
+    create_dns_delegation: true
+    reboot: true
+    reboot_timeout: 1800
+  when: "'dc_child' in group_names"
+```
+
+**El playbook** (`playbooks/02-deploy-child-domain.yml`) tiene dos plays: primero prepara el bosque en DC01 y después promueve DC02:
+
+```yaml
+- name: Preparar el bosque para el dominio hijo
+  hosts: dc_root
+  gather_facts: false
+  tasks:
+    - name: La cuenta de automatización pertenece a Enterprise Admins
+      microsoft.ad.group:
+        name: Enterprise Admins
+        members:
+          add:
+            - vagrant
+
+- name: Desplegar el dominio hijo
+  hosts: dc_child
+  gather_facts: false
+  roles:
+    - ad_forest
+```
+
+**Bosque frente a dominio hijo**, lo que hace cada módulo por debajo:
+
+| | Bosque (DC01) | Dominio hijo (DC02) |
+|---|---|---|
+| Módulo de Ansible | `microsoft.ad.domain` | `microsoft.ad.domain_child` |
+| Cmdlet equivalente | `Install-ADDSForest` | `Install-ADDSDomain -DomainType ChildDomain` |
+| Credenciales | Ninguna: el bosque aún no existe | Una cuenta de **Enterprise Admins** |
+| Requisito de red | — | Resolver por DNS el dominio padre |
+| Nivel funcional | Del bosque y del dominio | Solo del dominio (≥ el del bosque) |
+| DNS | Crea `lab.local` y `_msdcs.lab.local` | Crea `emea.lab.local` y la delegación `emea` en `lab.local` |
+
+**Ejecución:**
+
+```powershell
+vagrant up DC02 --provider vmware_desktop
+vagrant snapshot save DC02 00-base-limpia
+```
+
+```bash
+ansible-playbook playbooks/02-deploy-child-domain.yml --check
+ansible-playbook playbooks/02-deploy-child-domain.yml
+```
+
+**Verificación.** `Get-ADForest` devuelve lo mismo desde DC01 y desde DC02:
+
+```
+Name               : lab.local
+ForestMode         : Windows2016Forest
+Domains            : {emea.lab.local, lab.local}
+GlobalCatalogs     : {DC01.lab.local, DC02.emea.lab.local}
+SchemaMaster       : DC01.lab.local
+DomainNamingMaster : DC01.lab.local
+Sites              : {Default-First-Site-Name}
+```
+
+La confianza, comprobada desde DC02 con `nltest /sc_verify:lab.local`:
+
+```
+Trusted DC Name \\DC01.lab.local
+Trusted DC Connection Status Status = 0 0x0 NERR_Success
+Trust Verification Status = 0 0x0 NERR_Success
+```
+
+DNS: la delegación `emea` en `lab.local` apunta a `DC02.emea.lab.local`, y desde DC01 `dc02.emea.lab.local` resuelve solo a `192.168.56.11`. Dos ejecuciones seguidas de `01-deploy-forest.yml` y `02-deploy-child-domain.yml` terminan con `changed=0`. Las salidas están en `docs/evidencias/paso7-*.txt`.
+
+#### Problemas que me encontré
+
+**1. `vagrant` no era Enterprise Admin.** Al promover DC01, las cuentas locales pasan al dominio: `LAB\vagrant` quedó en `BUILTIN\Administrators`, y el único miembro de *Enterprise Admins* era `Administrator`. Crear un dominio hijo modifica la partición de configuración del bosque, así que exige Enterprise Admins. Lo detecté antes de ejecutar nada, consultando los grupos:
+
+```bash
+ansible DC01 -m ansible.windows.win_shell -a '(Get-ADUser vagrant -Properties MemberOf).MemberOf; (Get-ADGroupMember "Enterprise Admins").SamAccountName'
+```
+
+Solución: el primer play del playbook 02 añade `vagrant` al grupo con `microsoft.ad.group`. En un entorno real sería una cuenta de servicio dedicada, y se quitaría del grupo al terminar.
+
+**2. Registro glue con la IP NAT.** Después de la promoción, desde DC01 `dc02.emea.lab.local` resolvía también a `192.168.133.130`. Al crear la delegación, `Install-ADDSDomain` añade en la zona del padre un registro A (*glue*) por cada IP del DC hijo, y en ese momento su servidor DNS escuchaba en las dos NIC. La limpieza del rol se ejecuta en DC02, pero la zona `lab.local` solo existe en DC01 (`emea.lab.local` y `lab.local` son particiones de dominio distintas). Solución: la tarea 10, que se ejecuta en DC01 con `delegate_to: "{{ ad_parent_dc }}"`.
+
+**3. `win_dns_client` devolvía `changed` en cada ejecución.** Al principio la tarea 2 usaba `ansible.windows.win_dns_client` con `adapter_names: "*"`. Tras la promoción, Windows añade `::1` como servidor DNS IPv6 en cada NIC, y el módulo reescribía la lista de todos los adaptadores, incluido el *Loopback Pseudo-Interface*, así que nunca coincidía:
+
+```
+Ethernet0    IPv4  {192.168.56.10, 192.168.56.11}
+Ethernet0    IPv6  {::1}
+Loopback...  IPv6  {fec0:0:0:ffff::1, fec0:0:0:ffff::2, fec0:0:0:ffff::3}
+```
+
+Solución: un `win_powershell` que solo compara y cambia los servidores **IPv4** de las NIC **activas**:
+
+```powershell
+param([string[]]$Servers)
+$Ansible.Changed = $false
+Get-NetAdapter | Where-Object Status -eq 'Up' | ForEach-Object {
+  $current = @((Get-DnsClientServerAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4).ServerAddresses)
+  if (($current -join ',') -ne ($Servers -join ',')) {
+    Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ServerAddresses $Servers
+    $Ansible.Changed = $true
+  }
+}
+```
+
+**4. `'ad_parent_dc' is undefined` en DC01.** Después de añadir la tarea 10, el playbook 01 empezó a fallar en DC01, aunque la tarea tiene `when: "'dc_child' in group_names"`. Ansible resuelve `delegate_to` **antes** de evaluar el `when`, y en DC01 esa variable no existe. Solución:
+
+```yaml
+delegate_to: "{{ ad_parent_dc | default(inventory_hostname) }}"
+```
+
+Lo detecté porque, después de cada cambio en el rol, vuelvo a ejecutar **los dos** playbooks, no solo el que estoy tocando.
 
 ## Estructura del proyecto
 

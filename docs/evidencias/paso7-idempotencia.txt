@@ -1,0 +1,42 @@
+
+PLAY [Preparar el bosque para el dominio hijo] *********************************
+
+TASK [La cuenta de automatización pertenece a Enterprise Admins] ***************
+ok: [DC01]
+
+PLAY [Desplegar el dominio hijo] ***********************************************
+
+TASK [ad_forest : Evitar que las NIC que no son del lab se registren en DNS] ***
+ok: [DC02]
+
+TASK [ad_forest : Resolver DNS con el DC del dominio padre] ********************
+ok: [DC02]
+
+TASK [ad_forest : Instalar el rol AD DS y sus herramientas] ********************
+ok: [DC02]
+
+TASK [ad_forest : Reiniciar si la instalación del rol lo requiere] *************
+skipping: [DC02]
+
+TASK [ad_forest : Crear el bosque lab.local] ***********************************
+skipping: [DC02]
+
+TASK [ad_forest : Crear el dominio hijo emea.lab.local] ************************
+ok: [DC02]
+
+TASK [ad_forest : Esperar a que Active Directory responda] *********************
+ok: [DC02]
+
+TASK [ad_forest : Servidor DNS escuchando solo en la IP del lab] ***************
+ok: [DC02]
+
+TASK [ad_forest : Eliminar registros A que apunten fuera de la red del lab] ****
+ok: [DC02]
+
+TASK [ad_forest : Eliminar registros glue fuera de la red del lab en la zona del padre] ***
+ok: [DC02 -> DC01(192.168.56.10)]
+
+PLAY RECAP *********************************************************************
+DC01                       : ok=1    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+DC02                       : ok=8    changed=0    unreachable=0    failed=0    skipped=2    rescued=0    ignored=0   
+

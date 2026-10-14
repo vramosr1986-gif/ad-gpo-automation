@@ -1,0 +1,12 @@
+ad_child_name: emea
+ad_dc_domain: "{{ ad_child_name }}.{{ ad_domain_name }}"
+ad_parent_dc: DC01
+
+# Antes de promoverse, el DC hijo resuelve lab.local con DC01; después, también consigo mismo
+ad_dns_servers:
+  - "{{ hostvars[ad_parent_dc].ansible_host }}"
+  - "{{ ansible_host }}"
+
+# Crear un dominio hijo exige una cuenta de Enterprise Admins del bosque
+ad_enterprise_admin_user: "vagrant@{{ ad_domain_name }}"
+ad_enterprise_admin_password: "{{ vault_windows_password }}"

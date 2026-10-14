@@ -483,6 +483,22 @@ Snail execution mode is active!
 
 Era el modo más lento posible: solo arrancaba con 1 vCPU (problema 2 del Paso 3), el primer arranque como DC tardó más de 10 minutos (problema 3 del Paso 6) y DC02 no llegaba a responder por WinRM. Para un lab con 3 o más VMs no era viable.
 
+**Antes de cambiar, intenté desactivar el hipervisor.** Con el hipervisor apagado, VirtualBox usaría VT-x directamente y admitiría varias CPU. Probé, por orden:
+
+| Intento | Comando | Resultado |
+|---|---|---|
+| Desactivar el hipervisor en el arranque | `bcdedit /set hypervisorlaunchtype off` | `HypervisorPresent` seguía en `True` |
+| Ver qué lo mantenía | `Get-CimInstance Win32_DeviceGuard -Namespace root\Microsoft\Windows\DeviceGuard` | `VirtualizationBasedSecurityStatus = 2`: **VBS** activo, sin servicios de seguridad (`SecurityServicesRunning = {0}`) |
+| Apagar VBS por registro | `HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\EnableVirtualizationBasedSecurity = 0` | Sin cambios |
+| Apagar VBS en el arranque | `bcdedit /set "{current}" vsmlaunchtype off` | Sin cambios |
+| Entrada de arranque separada para el lab | `bcdedit /copy "{current}" /d "Windows 11 - Lab VirtualBox"` | El hipervisor seguía presente y, además, **WSL2 dejó de arrancar** en esa entrada (`HCS_E_SERVICE_NOT_AVAILABLE`) |
+
+Conclusiones:
+
+- Al comprobar el estado hay que mirar **las dos cosas**: `(Get-CimInstance Win32_ComputerSystem).HypervisorPresent` y el estado de VBS. `bcdedit` puede decir `Off` y el hipervisor seguir cargado.
+- `bcdedit` sin PowerShell de administrador **no muestra nada** (ni error), lo que lleva a conclusiones falsas. Y en PowerShell los identificadores van entre comillas: `"{current}"`, `"{default}"`; sin ellas, PowerShell interpreta las llaves como un bloque de código.
+- Aunque lo hubiera conseguido, el coste era alto: sin hipervisor no funcionan WSL2 (donde vive Ansible) ni Docker. La solución correcta era un hipervisor que conviva con el de Windows, y por eso cambié a VMware.
+
 **Qué instalé:**
 
 | Herramienta | Versión |
@@ -529,7 +545,21 @@ La NIC NAT de VMware está en `192.168.133.0/24`, así que la IP NAT de las VMs 
 
 #### Problemas que me encontré
 
-**1. El servicio `VagrantVMware` no arrancaba** (`failed to generate VMware installation information`). La utilidad no encontraba la instalación de VMware Workstation 26. Lo arreglé con *Restore Defaults* en el Editor de red virtual de VMware y copiando la clave de registro de la instalación de VMware a `WOW6432Node`, donde la busca la utilidad.
+**1. La Vagrant VMware Utility no reconoce VMware Workstation 26.** Primero el instalador `.msi` se negaba a instalar (*requires a valid installation of VMware Workstation*) aunque Workstation estaba instalado; después, el servicio `VagrantVMware` no arrancaba, y su log (`C:\ProgramData\HashiCorp\vagrant-vmware-desktop\logs\utility.log`) decía:
+
+```
+[ERROR] failed to generate VMware installation information: error="El sistema no puede encontrar el archivo especificado."
+```
+
+La causa: Workstation 26 es la primera versión totalmente de 64 bits y registra su instalación en la vista de 64 bits del registro (`HKLM\SOFTWARE\VMware, Inc.`), mientras que la utilidad 1.0.24 solo la busca en la vista de 32 bits (`WOW6432Node`). Es un fallo conocido ([issue #177](https://github.com/hashicorp/vagrant-vmware-desktop/issues/177), con arreglo propuesto en el [PR #182](https://github.com/hashicorp/vagrant-vmware-desktop/pull/182)). Mientras no se publique, lo resuelve copiar la clave y añadir el valor `Core` (PowerShell como administrador):
+
+```powershell
+reg copy "HKLM\SOFTWARE\VMware, Inc.\VMware Workstation" "HKLM\SOFTWARE\WOW6432Node\VMware, Inc.\VMware Workstation" /s /f
+reg add  "HKLM\SOFTWARE\WOW6432Node\VMware, Inc." /v Core /t REG_SZ /d "VMware Workstation" /f
+net start VagrantVMware
+```
+
+Con solo la copia de la clave, el instalador ya acepta Workstation, pero el servicio no arranca: hace falta también `Core`. Cuando funciona, el log termina con `api service start: host=127.0.0.1 port=9922`. Por el camino también usé *Restore Defaults* en el Editor de red virtual para regenerar las redes VMnet.
 
 **2. Vagrant no puede crear la red host-only** (`POST /vmnet` → `400`). Creé la red a mano en el Editor de red virtual: **VMnet1**, host-only, `192.168.56.0/24`, **sin DHCP**.
 
@@ -692,6 +722,35 @@ Trust Verification Status = 0 0x0 NERR_Success
 ```
 
 DNS: la delegación `emea` en `lab.local` apunta a `DC02.emea.lab.local`, y desde DC01 `dc02.emea.lab.local` resuelve solo a `192.168.56.11`. Dos ejecuciones seguidas de `01-deploy-forest.yml` y `02-deploy-child-domain.yml` terminan con `changed=0`. Las salidas están en `docs/evidencias/paso7-*.txt`.
+
+**Salud de los DC.** Después de la promoción, en DC01:
+
+```powershell
+dcdiag /q
+repadmin /replsummary
+Get-ADTrust -Filter * | Select-Object Name, Direction, IntraForest, TrustAttributes, TrustType
+```
+
+La confianza con el hijo sale como debe: `Direction = BiDirectional`, `IntraForest = True`, `TrustAttributes = 32` (*within forest*) y `TrustType = Uplevel`. Es transitiva (`DisallowTransivity = False`): si añado otro hijo, confiará en `emea` a través de `lab.local`.
+
+La replicación entre los dos DC, sin fallos:
+
+```
+Source DSA          largest delta    fails/total %%   error
+ DC01                      39m:56s    0 /   4    0
+ DC02                      34m:21s    0 /   4    0
+```
+
+Aunque están en dominios distintos, DC01 y DC02 replican entre sí las particiones comunes del bosque (esquema, configuración y `ForestDnsZones`) y la parte del catálogo global. La partición de cada dominio solo se replica entre DCs del mismo dominio.
+
+`dcdiag /q` solo muestra lo que falla, y salió un único aviso:
+
+```
+There are warning or error events within the last 24 hours after the SYSVOL has been shared.
+......................... DC01 failed test DFSREvent
+```
+
+No es una avería. La prueba cuenta cualquier aviso o error del registro *DFS Replication* de las últimas 24 horas, aunque ya esté resuelto. En el registro (`Get-WinEvent -LogName "DFS Replication" -MaxEvents 15`) se ve la secuencia de la promoción: un error **1202** (no encuentra un DC mientras AD arranca) y un aviso **6016**, y justo después el **1206** (contacta con el DC) y el **4602** (*SYSVOL inicializado correctamente*). Pasadas 24 horas sin errores nuevos, la prueba vuelve a pasar. Lo que sí habría que investigar son errores posteriores a la promoción, como el 2213 o el 4012.
 
 #### Problemas que me encontré
 

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Recrea el lab desde cero con un solo comando.
 

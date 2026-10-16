@@ -1,19 +1,19 @@
 # ad-gpo-automation
 
-Laboratorio para automatizar Active Directory y GPOs con Ansible (`microsoft.ad`, `ansible.windows`) y PowerShell.
-Aquí voy contando paso a paso cómo he montado todo.
+Laboratorio de Active Directory **definido como código**: un bosque con dos dominios, un servidor miembro, DNS, OU y usuarios de prueba, creados desde cero con Vagrant (VMware) y Ansible (`microsoft.ad`, `ansible.windows`).
+Aquí voy contando paso a paso cómo lo he montado y los problemas que me encontré.
 
-## Arquitectura objetivo
+## Qué crea
 
-![Arquitectura: Identity Lifecycle as Code](docs/img/arquitectura-identidad.svg)
+| Máquina | IP del lab | Sistema | Papel |
+|---|---|---|---|
+| DC01 | 192.168.56.10 | Windows Server 2022 (escritorio) | DC raíz del bosque `lab.local`, DNS |
+| DC02 | 192.168.56.11 | Windows Server 2022 Core | DC del dominio hijo `emea.lab.local`, DNS |
+| SRV01 | 192.168.56.20 | Windows Server 2022 Core | servidor miembro de `lab.local`, en `OU=Servidores` |
 
-El objetivo no es un alta masiva desde CSV, sino gestionar el **ciclo de vida completo de las identidades** (altas, cambios y bajas) como código:
+Además: zona DNS inversa, reenviadores, aging y scavenging; papelera de reciclaje de AD; 8 OU, 3 grupos y 6 usuarios de prueba.
 
-- **Fuente de verdad en Git:** los cambios entran por Pull Request revisada por el responsable del área (CODEOWNERS), con separación entre quien solicita y quien aprueba.
-- **Validación en CI antes de tocar el AD:** esquema de datos, reglas de segregación de funciones (SoD), `ansible-lint` y tests contra un DC efímero.
-- **Ejecución segura:** plan con `--check --diff`, *circuit breaker* que aborta si un cambio afecta a demasiados objetos, backup previo y aplicación por lotes a través de un endpoint JEA con mínimo privilegio.
-- **Operación:** secretos en Vault, logs y métricas en Grafana, informe por correo, cierre del ticket y procedimientos de recuperación probados.
-
+**Montarlo de una vez:** ver [Recrear el lab desde cero](#recrear-el-lab-desde-cero).
 
 ## Hoja de ruta
 
@@ -25,18 +25,12 @@ El objetivo no es un alta masiva desde CSV, sino gestionar el **ciclo de vida co
 - [x] Paso 4 — Nodo de control Ansible en WSL y primer `win_ping`
 - [x] Paso 5 — Inventario y credenciales cifradas con Ansible Vault
 - [x] Paso 6 — Promoción de DC01 a controlador de dominio (`lab.local`) con Ansible
-- [ ] Paso 7 — DC02 (dominio hijo) y SRV01 (servidor miembro)
-  - [x] DC02: dominio hijo `emea.lab.local`
-  - [ ] SRV01: servidor miembro
-
-**Fases de automatización** (cuando el entorno esté listo)
-
-- [ ] Fase 1 — Identity Lifecycle as Code: altas, cambios y bajas
-- [ ] Fase 2 — GPO como código, backup y rollback
-- [ ] Fase 3 — AWX como orquestador
-- [ ] Fase 4 — Parcheo orquestado por oleadas
-- [ ] Fase 5 — Monitorización y Event-Driven Ansible (*self-healing*)
-- [ ] Fase 6 — Ticketing (GLPI) y notificaciones por correo
+- [x] Paso 7 — DC02: dominio hijo `emea.lab.local`
+- [x] Paso 8 — SRV01: servidor miembro unido al dominio
+- [x] Paso 9 — DNS como código
+- [x] Paso 10 — OU, grupos, usuarios de prueba y papelera de reciclaje
+- [x] Paso 11 — Recrear el lab desde cero con un solo playbook
+- [ ] Prueba completa: `vagrant destroy` y reconstrucción con `site.yml`
 
 ## Cómo he montado el entorno
 
@@ -259,8 +253,10 @@ sudo apt update && sudo apt install -y python3-venv python3-pip
 python3 -m venv ~/.venvs/ansible
 source ~/.venvs/ansible/bin/activate          # el prompt muestra (ansible)
 pip install ansible pywinrm
-ansible-galaxy collection install ansible.windows microsoft.ad community.windows
+ansible-galaxy collection install -r collections/requirements.yml
 ```
+
+`collections/requirements.yml` fija la versión de cada colección (`ansible.windows` 3.8.0, `microsoft.ad` 1.12.1), para que el lab se monte igual dentro de un año.
 
 Cada vez que abro una terminal nueva activo el entorno con `source ~/.venvs/ansible/bin/activate` (y `deactivate` para salir).
 
@@ -637,6 +633,8 @@ Get-ADTrust -Filter * | Select-Object Name, Direction, IntraForest, TrustAttribu
 
 La confianza con el hijo sale como debe: `Direction = BiDirectional`, `IntraForest = True`, `TrustAttributes = 32` (*within forest*) y `TrustType = Uplevel`. Es transitiva (`DisallowTransivity = False`): si añado otro hijo, confiará en `emea` a través de `lab.local`.
 
+![Get-ADTrust en DC01: confianza bidireccional con emea.lab.local](docs/img/capturas/paso7-04-confianza-lab-emea.png)
+
 La replicación entre los dos DC, sin fallos:
 
 ```
@@ -644,6 +642,8 @@ Source DSA          largest delta    fails/total %%   error
  DC01                      39m:56s    0 /   4    0
  DC02                      34m:21s    0 /   4    0
 ```
+
+![repadmin /replsummary: DC01 y DC02 sin fallos de replicación](docs/img/capturas/paso7-05-repadmin-replsummary.png)
 
 Aunque están en dominios distintos, DC01 y DC02 replican entre sí las particiones comunes del bosque (esquema, configuración y `ForestDnsZones`) y la parte del catálogo global. La partición de cada dominio solo se replica entre DCs del mismo dominio.
 
@@ -655,6 +655,18 @@ There are warning or error events within the last 24 hours after the SYSVOL has 
 ```
 
 No es una avería. La prueba cuenta cualquier aviso o error del registro *DFS Replication* de las últimas 24 horas, aunque ya esté resuelto. En el registro (`Get-WinEvent -LogName "DFS Replication" -MaxEvents 15`) se ve la secuencia de la promoción: un error **1202** (no encuentra un DC mientras AD arranca) y un aviso **6016**, y justo después el **1206** (contacta con el DC) y el **4602** (*SYSVOL inicializado correctamente*). Pasadas 24 horas sin errores nuevos, la prueba vuelve a pasar. Lo que sí habría que investigar son errores posteriores a la promoción, como el 2213 o el 4012.
+
+![Registro DFS Replication durante la promoción: 1202, 6016 y después 1206 y 4602](docs/img/capturas/paso7-03-dfsr-eventos-promocion.png)
+
+Otras capturas de este paso:
+
+- Consola *Usuarios y equipos de Active Directory* en DC01, con el menú del dominio `lab.local`:
+
+  ![ADUC: menú del dominio lab.local](docs/img/capturas/paso7-01-aduc-menu-dominio.png)
+
+- *Administrador del servidor* en DC01 mostrando DC02 con *Kerberos target resolution error* (pendiente de revisar):
+
+  ![Administrador del servidor: DC02 con Kerberos target resolution error](docs/img/capturas/paso7-02-server-manager-dc02-kerberos.png)
 
 #### Problemas que me encontré
 
@@ -698,22 +710,301 @@ delegate_to: "{{ ad_parent_dc | default(inventory_hostname) }}"
 
 Lo detecté porque, después de cada cambio en el rol, vuelvo a ejecutar **los dos** playbooks, no solo el que estoy tocando.
 
-## Estructura del proyecto
+### Paso 8 — SRV01: servidor miembro unido al dominio
 
-Esta es la estructura prevista. Las carpetas ya existen y se irán llenando en los siguientes pasos.
+SRV01 (Windows Server 2022 Core) se une a `lab.local` como servidor miembro. No se une a cualquier sitio: su cuenta de equipo va en `OU=Servidores`, porque el contenedor por defecto `CN=Computers` no admite GPO. Los DC se quedan en `OU=Domain Controllers`, que tiene enlazada la *Default Domain Controllers Policy* y de la que no se mueven nunca.
+
+**Inventario.** Un grupo nuevo dentro de `windows`, así que SRV01 hereda la conexión WinRM de `group_vars/windows/`:
+
+```yaml
+member_servers:
+  hosts:
+    SRV01:
+      ansible_host: 192.168.56.20
+```
+
+**Variables** (`inventories/lab/group_vars/member_servers/vars.yml`):
+
+```yaml
+ad_dc_domain: "{{ ad_domain_name }}"
+ad_parent_dc: DC01
+ad_dns_servers:
+  - "{{ hostvars[ad_parent_dc].ansible_host }}"     # 192.168.56.10
+ad_member_ou: "OU=Servidores,{{ ad_domain_dn }}"     # OU=Servidores,DC=lab,DC=local
+ad_join_user: "vagrant@{{ ad_domain_name }}"
+ad_join_password: "{{ vault_windows_password }}"
+```
+
+`ad_domain_dn` se calcula en `group_vars/all/vars.yml` a partir de `ad_domain_name`: `lab.local` → `DC=lab,DC=local`.
+
+**Dos roles, dos máquinas** (`playbooks/04-join-members.yml`):
+
+| Play | Equipo | Rol | Qué hace |
+|---|---|---|---|
+| 1 | DC01 | `ad_ou` | Crea las OU de `ad_ous` y **preconfigura** la cuenta de equipo de SRV01 en `OU=Servidores` (*pre-staging*). Si ya existía en otro sitio, la mueve |
+| 2 | SRV01 | `ad_member` | NIC NAT sin registro DNS → DNS de todas las NIC a DC01 → comprueba que el SRV `_ldap._tcp.dc._msdcs.lab.local` devuelve un DC → `microsoft.ad.membership` → `Test-ComputerSecureChannel` |
+
+La comprobación del SRV antes de unir es intencionada: si el DNS está mal, el playbook se para con un error claro, en vez de fallar dentro del `Add-Computer` con un mensaje confuso.
+
+**Por qué `microsoft.ad.membership` y no `Add-Computer` en un `win_powershell`:** el módulo describe un estado (`state: domain`) y no una acción. Si el equipo ya está unido devuelve `ok`, y gestiona él mismo el reinicio. Con `Add-Computer -Restart` habría que programar a mano la comprobación previa, y el reinicio cortaría la conexión de Ansible a mitad de tarea.
+
+**Verificación** (en DC01):
+
+```powershell
+Get-ADComputer SRV01 | Select-Object DistinguishedName
+# CN=SRV01,OU=Servidores,DC=lab,DC=local
+```
+
+La segunda ejecución del playbook termina con `changed=0` (captura con los nombres de tarea anteriores al renombrado):
+
+![Segunda ejecución de 04-join-members.yml: changed=0 en DC01 y SRV01](docs/img/capturas/paso7-09-playbook04-idempotente.png)
+
+#### Problemas que me encontré
+
+**1. SRV01 no encontraba el dominio.** `Resolve-DnsName lab.local` devolvía `DNS name does not exist`. La NIC del lab no tenía servidor DNS y la NIC NAT usaba `192.168.133.2`, el DNS de la NAT de VMware, que reenvía a Internet, donde `lab.local` no existe. Un equipo solo encuentra el dominio a través de su DNS: el rol pone DC01 como DNS en **todas** las NIC. Si una sigue con el DNS de la NAT, Windows puede usarla y fallar de forma intermitente.
+
+![sconfig en SRV01: NIC del lab (192.168.56.20) y NIC NAT (192.168.133.131)](docs/img/capturas/paso7-08-srv01-sconfig-red.png)
+
+**2. `Add-Computer SRV01` no hace lo que parece.** Al probar la unión a mano, el primer parámetro posicional de `Add-Computer` es `-DomainName`, así que intentaba unir el equipo a un dominio llamado `SRV01`. La forma correcta: `Add-Computer -DomainName lab.local -OUPath 'OU=Servidores,DC=lab,DC=local' -Credential $cred -Restart`.
+
+La unión a mano que hice, todavía sin `-OUPath`:
+
+![Add-Computer en SRV01](docs/img/capturas/paso7-06-srv01-add-computer.png)
+
+**3. `New-ADComputer failed: The specified account already exists`.** SRV01 ya estaba unido (a mano) en `CN=Computers`. Sin `identity`, `microsoft.ad.computer` busca el objeto por nombre **y ruta** (`CN=SRV01,OU=Servidores,…`), no lo encuentra e intenta crearlo. Solución: `identity: "SRV01$"` (el `sAMAccountName`, único en el dominio), que lo encuentra esté donde esté y lo mueve a la OU.
+
+Así estaba antes del playbook, en el contenedor por defecto:
+
+![Centro de administración de AD: SRV01 en CN=Computers](docs/img/capturas/paso7-07-adac-srv01-unido.png)
+
+### Paso 9 — DNS como código
+
+El DNS que dejó la promoción funcionaba, pero tenía carencias:
+
+| Antes | Problema |
+|---|---|
+| Sin zona inversa | `192.168.56.10` no resolvía a nombre |
+| Reenviadores de DC01: `fec0:0:0:ffff::1/2/3` y `192.168.133.2` | direcciones IPv6 *site-local* obsoletas y el DNS de la NAT de VMware |
+| Sin aging ni scavenging | los registros dinámicos antiguos no se borran nunca |
+
+**Variables** (separadas en ficheros `dns.yml` para no mezclarlas con las del dominio):
+
+| Fichero | Variables |
+|---|---|
+| `group_vars/all/dns.yml` | `dns_reverse_zone` (calculada desde `ad_lab_network` → `56.168.192.in-addr.arpa`), `dns_aging_interval` (7 días), `dns_external_check`, `dns_records` |
+| `group_vars/dc_root/dns.yml` | `dns_forwarders: [1.1.1.1, 9.9.9.9]`, `dns_aging_zones` (`lab.local` y la inversa) |
+| `group_vars/dc_child/dns.yml` | `dns_forwarders`: la IP de DC01; `dns_aging_zones: [emea.lab.local]` |
+
+**El rol `ad_dns`** (`playbooks/03-dns.yml`, en los dos DC):
+
+| # | Tarea | Módulo | Raíz | Hijo |
+|---|---|---|:-:|:-:|
+| 1 | Configurar los reenviadores DNS del servidor | `win_powershell` | ✓ | ✓ |
+| 2 | Crear la zona inversa replicada en todo el bosque | `ansible.windows.win_dns_zone` | ✓ | |
+| 3 | Activar el aging en las zonas y el scavenging en el servidor | `win_powershell` | ✓ | ✓ |
+| 4 | Crear los registros estáticos de `dns_records` en la zona del dominio | `ansible.windows.win_dns_record` | ✓ | ✓ |
+| 5 | Forzar el registro dinámico del PTR propio si todavía no existe | `win_powershell` | ✓ | ✓ |
+| 6 | Comprobar la resolución: registros estáticos, PTR propio y un nombre de Internet | `win_powershell` + `until` | ✓ | ✓ |
+
+Decisiones:
+
+- **Zona inversa con replicación de bosque**, no de dominio: DC02 está en otro dominio y tiene que poder registrar su PTR en ella.
+- **Los PTR de los DC no se escriben en el código**: los crea el registro dinámico (`Register-DnsClient`). El código solo lo fuerza si falta.
+- **DC02 reenvía a DC01**: la consulta de un cliente de `emea` a Internet sigue la cadena cliente → DC02 → DC01 → 1.1.1.1.
+- **La tarea 6 reintenta** (`retries: 12`, `delay: 10`): el PTR de DC02 tardó unos 40 segundos en registrarse y replicarse.
+
+**Resultado** (salida completa en `docs/evidencias/paso9-dns.txt`):
+
+```
+DC01: PTR 192.168.56.10: true, intranet.lab.local: true, wiki.lab.local: true, portal.emea.lab.local: true, microsoft.com: true
+DC02: PTR 192.168.56.11: true, intranet.lab.local: true, wiki.lab.local: true, portal.emea.lab.local: true, microsoft.com: true
+```
+
+`portal.emea.lab.local` es un CNAME de la zona hija que apunta a `intranet.lab.local`, de la zona padre: comprueba la resolución en los dos sentidos (delegación y reenviador).
+
+#### Problemas que me encontré
+
+**`community.windows.win_dns_zone has been deprecated`.** Los módulos de DNS se han movido a `ansible.windows`. Mismo nombre y mismos parámetros: solo cambia el prefijo, y el lab deja de depender de `community.windows`.
+
+### Paso 10 — OU, grupos, usuarios de prueba y papelera de reciclaje
+
+Datos de prueba sobre los que practicar la operación de AD.
+
+**Estructura de OU** (`ad_ous` en `group_vars/all/vars.yml`; la OU padre va antes que sus hijas):
+
+```
+DC=lab,DC=local
+├── Domain Controllers      (de AD)
+├── Servidores
+├── Puestos
+├── Usuarios
+│   ├── IT
+│   ├── RRHH
+│   └── Ventas
+├── Grupos
+└── Cuentas de servicio
+```
+
+**Datos en `data/`**, separados del código:
+
+- `data/grupos.yml`: `GG_IT`, `GG_RRHH`, `GG_Ventas` (grupos globales de seguridad, en `OU=Grupos`).
+- `data/usuarios.yml`: 6 usuarios; la OU sale del departamento (`OU=<departamento>,OU=Usuarios,…`).
+
+**El rol `ad_users_groups`** (`playbooks/05-identidades.yml`, en DC01) crea grupos y usuarios con `microsoft.ad.group` y `microsoft.ad.user`. Dos decisiones para que el rol solo fije el **estado inicial**:
+
+- `update_password: on_create`: la contraseña se pone al crear el usuario y no se vuelve a tocar.
+- Sin `enabled`: el módulo habilita la cuenta al crearla y después no gestiona ese atributo.
+
+Así, si un usuario se deshabilita o cambia de contraseña después, volver a lanzar el playbook no lo deshace.
+
+**Contraseña inicial** en el vault: `vault_ad_test_user_password`, en `group_vars/domain_controllers/vault.yml`. La necesita quien crea los usuarios (un DC), no los usuarios. La tarea lleva `no_log: true` para que la contraseña no aparezca en la salida si algo falla.
+
+![Ejecución de 05-identidades.yml: OU y grupos en ok, usuarios creados con la salida censurada por no_log](docs/img/capturas/fase1-01-playbook05-identidades.png)
+
+**Papelera de reciclaje de AD** (última tarea de `roles/ad_forest/tasks/main.yml`). Se activa una vez para todo el bosque y **no se puede desactivar**. No hay módulo para esto, así que es un `win_powershell` con su comprobación:
+
+```powershell
+$feature = Get-ADOptionalFeature -Identity 'Recycle Bin Feature'
+if ($feature.EnabledScopes.Count -gt 0) { $Ansible.Changed = $false; return }
+Enable-ADOptionalFeature -Identity $feature -Scope ForestOrConfigurationSet -Target 'lab.local' -Confirm:$false
+```
+
+A mano, `Enable-ADOptionalFeature` pide confirmación porque es irreversible; por eso la tarea lleva `-Confirm:$false`. Después, `EnabledScopes` ya no está vacío:
+
+![Activar la papelera a mano](docs/img/capturas/fase2-01-papelera-ad-activar.png)
+
+![Comprobación: EnabledScopes con la partición de configuración y DC01](docs/img/capturas/fase2-02-papelera-ad-comprobacion.png)
+
+**Verificación** (en DC01):
+
+```
+DistinguishedName                                        Enabled GivenName
+CN=Ana García,OU=IT,OU=Usuarios,DC=lab,DC=local             True Ana
+CN=Luis Martín,OU=IT,OU=Usuarios,DC=lab,DC=local            True Luis
+CN=Marta López,OU=RRHH,OU=Usuarios,DC=lab,DC=local          True Marta
+CN=Pedro Sanz,OU=Ventas,OU=Usuarios,DC=lab,DC=local         True Pedro
+CN=Elena Ruiz,OU=Ventas,OU=Usuarios,DC=lab,DC=local         True Elena
+CN=Temporal Borrar,OU=Ventas,OU=Usuarios,DC=lab,DC=local    True Temporal
+```
+
+![Get-ADUser: los 6 usuarios en su OU](docs/img/capturas/fase1-02-usuarios-creados.png)
+
+![Miembros de los grupos GG_](docs/img/capturas/fase1-03-miembros-grupos.png)
+
+#### Problemas que me encontré
+
+**1. `'vault_ad_test_user_password' is undefined`, y después `Vault format unhexlify error`.** Añadí la variable editando `vault.yml` con `nano` directamente, no con `ansible-vault edit`. La línea quedó **en claro**, pegada debajo del bloque cifrado, y Ansible no podía descifrar el fichero. Se arregló recuperando la versión de git y editando de la forma correcta:
+
+```bash
+git checkout -- inventories/lab/group_vars/domain_controllers/vault.yml
+EDITOR=nano ansible-vault edit inventories/lab/group_vars/domain_controllers/vault.yml
+```
+
+Para comprobar que un vault está cifrado entero, sin mostrar secretos: la primera línea es `$ANSIBLE_VAULT;1.1;AES256` y el resto solo hexadecimal (`tail -n +2 vault.yml | grep -cvE '^[0-9a-f]+$'` debe dar `0`). Para comprobar que una variable existe sin mostrarla: `ansible DC01 -m debug -a "msg={{ vault_ad_test_user_password is defined }}"`.
+
+**2. El playbook 01 reinició DC01 sin cambiar nada.** La tarea de instalar AD DS salió `ok` (ya estaba instalado), pero Windows tenía un reinicio pendiente por otro motivo, y la tarea de reinicio solo miraba `reboot_required`. Un playbook que no cambia nada no puede reiniciar un DC: ahora el reinicio exige las dos condiciones:
+
+```yaml
+when: adds_feature is changed and adds_feature.reboot_required
+```
+
+La ejecución que lo destapó: todo `ok` salvo el reinicio.
+
+![01-deploy-forest.yml: Reiniciar si la instalación del rol lo requiere en changed](docs/img/capturas/paso6-playbook01-reinicio.png)
+
+### Paso 11 — Recrear el lab desde cero
+
+Todo lo anterior se puede montar con dos comandos. Los pasos 1 a 10 explican cómo y por qué; esta sección es la receta.
+
+**1. Una sola vez en el equipo** (no está en código porque es configuración del host):
+
+| Qué | Dónde se explica |
+|---|---|
+| VMware Workstation, Vagrant, plugin y Vagrant VMware Utility (con el arreglo del registro) | Paso 1 |
+| Red **VMnet1** host-only `192.168.56.0/24` sin DHCP, y el equipo con `192.168.56.1` | Paso 3 |
+| WSL con el entorno de Ansible y `/etc/wsl.conf` con `metadata` | Pasos 4 y 5 |
+| La **clave del vault** en `~/.ansible/lab-vault-pass` (permisos `600`) | Paso 5 y abajo |
+| `TrustedHosts` para conectarse por PowerShell a las VMs | [Acceso a las VMs](#acceso-a-las-vms) |
+
+> **La clave del vault es lo único que no se puede recuperar.** Está fuera del repo a propósito. Guardo una copia en mi gestor de contraseñas: sin ella, los `vault.yml` no se pueden descifrar y habría que crearlos de nuevo.
+
+**2. Las VMs** (PowerShell, en la raíz del repo):
+
+```powershell
+vagrant up --provider vmware_desktop
+```
+
+**3. Todo el AD** (WSL):
+
+```bash
+source ~/.venvs/ansible/bin/activate
+cd /mnt/c/Users/vramo/ad-gpo-automation
+ansible-galaxy collection install -r collections/requirements.yml
+ansible-playbook playbooks/site.yml
+```
+
+`playbooks/site.yml` importa los playbooks del 01 al 05 en orden. Sobre un lab ya montado, termina con `changed=0`.
+
+#### Problemas que me encontré
+
+**`vagrant up DC01` se quedaba en *Waiting for machine to boot*.** Al arrancar, Vagrant pregunta a VMware (`vmrun`) la IP de la VM para reenviarle los puertos (WinRM, RDP). VMware le devolvió la IP del lab, `192.168.56.10`, y no la de la NAT. La tabla de reenvíos de la NAT (`C:\ProgramData\VMware\vmnetnat.conf`) quedó así:
+
+```
+2229 = 192.168.56.10:5985     ← la NAT (VMnet8) no llega a VMnet1
+2217 = 192.168.133.130:5985   ← DC02: correcto
+```
+
+Vagrant esperaba WinRM en `127.0.0.1:2229` y nunca llegaba. Solución en el `Vagrantfile`, en cada VM: `vm.enable_vmrun_ip_lookup = false`, para que la IP se saque del DHCP de la NAT, que siempre es la correcta. Se aplica con `vagrant reload`.
+
+### Acceso a las VMs
+
+Ansible entra por la IP del lab. Para trabajar a mano hago lo mismo, en vez de usar los puertos reenviados por Vagrant.
+
+**Escritorio remoto** (DC01, que tiene escritorio): `mstsc /v:192.168.56.10`, usuario `LAB\vagrant`.
+
+**PowerShell remoto.** Por IP, Windows exige que el destino esté en `TrustedHosts`. Una sola vez, en PowerShell como administrador:
+
+```powershell
+Start-Service WinRM
+Set-Item WSMan:\localhost\Client\TrustedHosts -Value "192.168.56.10,192.168.56.11,192.168.56.20" -Force
+```
+
+Después, sin administrador:
+
+```powershell
+Enter-PSSession 192.168.56.10 -Credential (Get-Credential LAB\vagrant)     # DC01
+Enter-PSSession 192.168.56.11 -Credential (Get-Credential EMEA\vagrant)    # DC02
+Enter-PSSession 192.168.56.20 -Credential (Get-Credential LAB\vagrant)     # SRV01
+```
+
+**`vagrant powershell <VM>` no funciona** (*Unable to establish a remote PowerShell connection*). Es un fallo de Vagrant 2.4.9: su script `plugins/commands/powershell/scripts/enable_psremoting.ps1` construye el usuario como `"$hostname\\$username"`, y en PowerShell `\\` son dos barras literales: envía `127.0.0.1\\vagrant` y el invitado responde *Acceso denegado*. Con `-c` sí funciona (`vagrant powershell DC01 -c "hostname"`), porque usa el cliente WinRM de Vagrant.
+
+## Estructura del proyecto
 
 ```
 ad-gpo-automation/
-├── inventories/lab/        # hosts.yml + group_vars (vault para credenciales)
+├── Vagrantfile                     # DC01, DC02 y SRV01 en VMware
+├── ansible.cfg
+├── collections/requirements.yml    # colecciones con versión fija
+├── inventories/lab/
+│   ├── hosts.yml                   # dc_root, dc_child, member_servers
+│   └── group_vars/                 # all, windows, domain_controllers, dc_root, dc_child, member_servers
+│                                   # (vars.yml en claro, vault.yml cifrado, dns.yml)
+├── data/                           # grupos.yml, usuarios.yml (datos de prueba)
+├── playbooks/
+│   ├── site.yml                    # monta todo: importa 01 a 05
+│   ├── 00-estado-dc.yml            # solo lectura: estado de los DC
+│   ├── 01-deploy-forest.yml        # bosque lab.local y papelera
+│   ├── 02-deploy-child-domain.yml  # dominio hijo emea.lab.local
+│   ├── 03-dns.yml                  # DNS de los DC
+│   ├── 04-join-members.yml         # OU y unión de servidores miembro
+│   └── 05-identidades.yml          # grupos y usuarios de prueba
 ├── roles/
-│   ├── ad_forest/          # promoción de DCs (microsoft.ad.domain, domain_child)
-│   ├── ad_ou/              # árbol de OUs declarativo desde YAML
-│   ├── ad_users_groups/    # ciclo de vida de identidades: altas, cambios y bajas
-│   ├── gpo_management/     # New-GPO, Set-GPRegistryValue, New-GPLink vía win_powershell
-│   └── ad_backup_rollback/ # Backup-GPO/Restore-GPO, AD Recycle Bin, snapshots
-├── playbooks/              # site.yml, provision_users.yml, rollback.yml...
-├── scripts/                # módulos PowerShell propios
-├── data/users.csv
-├── tests/                  # Pester + validaciones con ldap_search
-└── docs/
+│   ├── ad_forest/                  # promoción de DCs, limpieza DNS, papelera
+│   ├── ad_dns/                     # reenviadores, zona inversa, aging, registros, pruebas
+│   ├── ad_ou/                      # OU y cuentas de equipo preconfiguradas
+│   ├── ad_member/                  # unión de un servidor al dominio
+│   └── ad_users_groups/            # grupos y usuarios desde data/
+├── scripts/                        # Set-LabIP.ps1, Optimize-LabGuest.ps1, Test-LabTools.ps1
+└── docs/                           # evidencias de ejecución e imágenes
 ```

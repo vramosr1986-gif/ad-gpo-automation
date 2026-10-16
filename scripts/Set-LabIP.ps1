@@ -21,3 +21,4 @@ Set-NetIPInterface -InterfaceIndex $lab.ifIndex -Dhcp Disabled
 $actual | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
 New-NetIPAddress -InterfaceIndex $lab.ifIndex -IPAddress $IPAddress -PrefixLength $PrefixLength | Out-Null
 Write-Output "Set-LabIP: $($lab.Name) configurada con $IPAddress/$PrefixLength"
+

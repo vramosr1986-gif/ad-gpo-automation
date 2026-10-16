@@ -20,6 +20,9 @@ config.vm.define "DC01" do |dc|
     vm.cpus = 2
     vm.gui = false
     vm.linked_clone = true
+    # IP de la NIC NAT por el DHCP de VMware, no por vmrun (que puede dar la del lab
+    # y dejar los reenvíos de puertos apuntando a una red que la NAT no alcanza)
+    vm.enable_vmrun_ip_lookup = false
     end
   end
 config.vm.define "DC02" do |dc|
@@ -34,6 +37,9 @@ config.vm.define "DC02" do |dc|
     vm.cpus = 2
     vm.gui = false
     vm.linked_clone = true
+    # IP de la NIC NAT por el DHCP de VMware, no por vmrun (que puede dar la del lab
+    # y dejar los reenvíos de puertos apuntando a una red que la NAT no alcanza)
+    vm.enable_vmrun_ip_lookup = false
     end
   end
 config.vm.define "SRV01" do |srv|
@@ -47,6 +53,9 @@ config.vm.define "SRV01" do |srv|
     vm.cpus = 2
     vm.gui = false
     vm.linked_clone = true
+    # IP de la NIC NAT por el DHCP de VMware, no por vmrun (que puede dar la del lab
+    # y dejar los reenvíos de puertos apuntando a una red que la NAT no alcanza)
+    vm.enable_vmrun_ip_lookup = false
   end
 end
 end

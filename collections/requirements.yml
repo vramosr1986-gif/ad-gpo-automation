@@ -1,0 +1,7 @@
+# Colecciones de Ansible del lab, con la versión probada.
+# Instalar: ansible-galaxy collection install -r collections/requirements.yml
+collections:
+  - name: ansible.windows
+    version: 3.8.0
+  - name: microsoft.ad
+    version: 1.12.1

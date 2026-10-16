@@ -1,0 +1,17 @@
+---
+# Monta el lab completo, en orden. Cada playbook es idempotente:
+# sobre un lab ya montado, todo termina con changed=0.
+- name: Bosque lab.local y papelera de reciclaje
+  ansible.builtin.import_playbook: 01-deploy-forest.yml
+
+- name: Dominio hijo emea.lab.local
+  ansible.builtin.import_playbook: 02-deploy-child-domain.yml
+
+- name: DNS de los controladores de dominio
+  ansible.builtin.import_playbook: 03-dns.yml
+
+- name: OU y servidores miembro unidos al dominio
+  ansible.builtin.import_playbook: 04-join-members.yml
+
+- name: Grupos y usuarios de prueba
+  ansible.builtin.import_playbook: 05-identidades.yml

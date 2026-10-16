@@ -3,3 +3,15 @@ ad_netbios_name: LAB
 ad_forest_mode: WinThreshold
 ad_domain_mode: WinThreshold
 ad_lab_network: 192.168.56.0/24
+ad_domain_dn: "DC={{ ad_domain_name.split('.') | join(',DC=') }}"
+
+# Unidades organizativas del dominio raíz (rol ad_ou). La OU padre va antes que sus hijas.
+ad_ous:
+  - { name: Servidores, path: "{{ ad_domain_dn }}", description: Servidores miembro }
+  - { name: Puestos, path: "{{ ad_domain_dn }}", description: Equipos de usuario }
+  - { name: Usuarios, path: "{{ ad_domain_dn }}", description: Cuentas de personas }
+  - { name: IT, path: "OU=Usuarios,{{ ad_domain_dn }}", description: Departamento de IT }
+  - { name: RRHH, path: "OU=Usuarios,{{ ad_domain_dn }}", description: Recursos Humanos }
+  - { name: Ventas, path: "OU=Usuarios,{{ ad_domain_dn }}", description: Departamento de Ventas }
+  - { name: Grupos, path: "{{ ad_domain_dn }}", description: Grupos de seguridad }
+  - { name: Cuentas de servicio, path: "{{ ad_domain_dn }}", description: Cuentas de aplicaciones y servicios }

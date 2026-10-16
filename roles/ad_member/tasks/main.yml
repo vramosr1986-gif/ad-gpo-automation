@@ -1,0 +1,57 @@
+---
+# Une un servidor al dominio. La cuenta de equipo ya existe en su OU (rol ad_ou).
+
+- name: Desactivar el registro en DNS de las NIC que no son del lab (NAT)
+  ansible.windows.win_powershell:
+    script: |
+      $labIf = (Get-NetIPAddress -AddressFamily IPv4 -IPAddress '{{ ansible_host }}').InterfaceIndex
+      $Ansible.Changed = $false
+      Get-DnsClient |
+        Where-Object { $_.InterfaceIndex -ne $labIf -and $_.RegisterThisConnectionsAddress } |
+        ForEach-Object {
+          Set-DnsClient -InterfaceIndex $_.InterfaceIndex -RegisterThisConnectionsAddress $false
+          $Ansible.Changed = $true
+        }
+
+# Todas las NIC preguntan al DC: si una sigue con el DNS de la NAT, Windows
+# puede usarla y no encontrar el dominio
+- name: Configurar el DC como servidor DNS en todas las NIC (ad_dns_servers)
+  ansible.windows.win_powershell:
+    script: |
+      param([string[]]$Servers)
+      $Ansible.Changed = $false
+      Get-NetAdapter | Where-Object Status -eq 'Up' | ForEach-Object {
+        $current = @((Get-DnsClientServerAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4).ServerAddresses)
+        if (($current -join ',') -ne ($Servers -join ',')) {
+          Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ServerAddresses $Servers
+          $Ansible.Changed = $true
+        }
+      }
+    parameters:
+      Servers: "{{ ad_dns_servers }}"
+
+- name: Comprobar antes de unir que el registro SRV del dominio devuelve un DC
+  ansible.windows.win_powershell:
+    script: |
+      Clear-DnsClientCache
+      (Resolve-DnsName "_ldap._tcp.dc._msdcs.{{ ad_dc_domain }}" -Type SRV -ErrorAction Stop |
+        Where-Object Type -eq 'SRV').NameTarget
+  register: dc_srv
+  changed_when: false
+
+- name: Unir el servidor al dominio {{ ad_dc_domain }} (reinicia solo si se une)
+  microsoft.ad.membership:
+    dns_domain_name: "{{ ad_dc_domain }}"
+    domain_server: "{{ dc_srv.output[0] }}"
+    domain_admin_user: "{{ ad_join_user }}"
+    domain_admin_password: "{{ ad_join_password }}"
+    state: domain
+    reboot: true
+    reboot_timeout: 900
+
+- name: Verificar el canal seguro con el dominio (Test-ComputerSecureChannel)
+  ansible.windows.win_powershell:
+    script: Test-ComputerSecureChannel
+  register: secure_channel
+  failed_when: not secure_channel.output[0]
+  changed_when: false

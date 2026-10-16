@@ -1,0 +1,14 @@
+ad_dc_domain: "{{ ad_domain_name }}"
+ad_parent_dc: DC01
+
+# Los servidores miembro resuelven con el DC del dominio al que se unen
+ad_dns_servers:
+  - "{{ hostvars[ad_parent_dc].ansible_host }}"
+
+# OU donde vive la cuenta de equipo (la crea el rol ad_ou en el DC)
+ad_member_ou: "OU=Servidores,{{ ad_domain_dn }}"
+
+# Cuenta para unir equipos. Pendiente: sustituirla por una cuenta delegada
+# que solo pueda crear equipos en ad_member_ou.
+ad_join_user: "vagrant@{{ ad_domain_name }}"
+ad_join_password: "{{ vault_windows_password }}"

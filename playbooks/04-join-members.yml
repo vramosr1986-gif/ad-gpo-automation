@@ -1,0 +1,12 @@
+---
+- name: Preparar OUs y cuentas de equipo
+  hosts: dc_root
+  gather_facts: false
+  roles:
+    - ad_ou
+
+- name: Unir los servidores miembro al dominio
+  hosts: member_servers
+  gather_facts: false
+  roles:
+    - ad_member

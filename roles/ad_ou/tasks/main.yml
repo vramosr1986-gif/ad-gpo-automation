@@ -1,0 +1,25 @@
+---
+# OUs y cuentas de equipo preconfiguradas (pre-staging). Se ejecuta en el DC raíz.
+
+- name: Crear las OU de ad_ous, protegidas contra borrado accidental
+  microsoft.ad.ou:
+    name: "{{ item.name }}"
+    path: "{{ item.path }}"
+    description: "{{ item.description | default(omit) }}"
+    protect_from_deletion: true
+    state: present
+  loop: "{{ ad_ous }}"
+  loop_control:
+    label: "OU={{ item.name }},{{ item.path }}"
+
+# Crea la cuenta antes de unir el equipo, ya en su OU (nunca en CN=Computers,
+# que no admite GPO). Si el equipo ya estaba unido en otra ubicación, la mueve:
+# identity por sAMAccountName la encuentra en cualquier sitio del dominio.
+- name: Crear o mover a su OU la cuenta de equipo de cada servidor miembro
+  microsoft.ad.computer:
+    identity: "{{ item }}$"
+    name: "{{ item }}"
+    path: "{{ hostvars[item].ad_member_ou }}"
+    dns_hostname: "{{ item | lower }}.{{ hostvars[item].ad_dc_domain }}"
+    state: present
+  loop: "{{ groups['member_servers'] | default([]) }}"

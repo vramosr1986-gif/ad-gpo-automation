@@ -71,6 +71,16 @@ foreach ($r in $requisitos) {
 }
 if ($faltan) { throw "Faltan requisitos del host: $($faltan -join ', '). Instálalos y vuelve a lanzar el script." }
 
+# Opcional: solo para entrar a mano con Enter-PSSession (Ansible no lo necesita). Se lee
+# del registro porque WSMan:\ exige administrador y el servicio WinRM arrancado.
+$trusted = try { (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WSMAN\Client' -Name trusted_hosts).trusted_hosts } catch { '' }
+$sinTrusted = @($vms.Values | Where-Object { $trusted -ne '*' -and $_ -notin ($trusted -split ',' | ForEach-Object { $_.Trim() }) })
+if ($sinTrusted) {
+    Write-Host ('  {0,-34} {1}' -f 'TrustedHosts (opcional)', "faltan $($sinTrusted -join ', '): .\scripts\Enable-LabRemoting.ps1 como administrador") -ForegroundColor Yellow
+} else {
+    Write-Host ('  {0,-34} {1}' -f 'TrustedHosts (opcional)', 'OK') -ForegroundColor Green
+}
+
 $wslRepo = (wsl.exe -e wslpath -a ($repo -replace '\\', '/')).Trim()
 
 # --- 2. Nodo de control en WSL -----------------------------------------------

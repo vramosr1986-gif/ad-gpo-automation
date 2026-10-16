@@ -994,12 +994,13 @@ Ansible entra por la IP del lab. Para trabajar a mano hago lo mismo, en vez de u
 
 **Escritorio remoto** (DC01, que tiene escritorio): `mstsc /v:192.168.56.10`, usuario `LAB\vagrant`.
 
-**PowerShell remoto.** Por IP, Windows exige que el destino esté en `TrustedHosts`. Una sola vez, en PowerShell como administrador:
+**PowerShell remoto.** Por IP, Windows exige que el destino esté en `TrustedHosts`. Ansible no lo necesita (se conecta desde WSL), así que no es un requisito del lab; `Deploy-Lab.ps1` solo avisa si falta. Una sola vez, en PowerShell **como administrador**:
 
 ```powershell
-Start-Service WinRM
-Set-Item WSMan:\localhost\Client\TrustedHosts -Value "192.168.56.10,192.168.56.11,192.168.56.20" -Force
+.\scripts\Enable-LabRemoting.ps1
 ```
+
+`scripts/Enable-LabRemoting.ps1` arranca el servicio WinRM si está parado (sin él no se puede leer ni cambiar `TrustedHosts`) y añade `192.168.56.10`, `.11`, `.20` y `127.0.0.1` (la que usa `vagrant powershell` con los puertos reenviados) **sin borrar** las que ya hubiera. Con `Set-Item ... -Value` a secas se sustituye la lista entera.
 
 Después, sin administrador:
 
@@ -1041,6 +1042,7 @@ ad-gpo-automation/
 ├── scripts/
 │   ├── Deploy-Lab.ps1              # monta el lab entero: requisitos, WSL, VMs y AD
 │   ├── setup-wsl.sh                # nodo de control en WSL: Ansible, colecciones y vault
+│   ├── Enable-LabRemoting.ps1      # TrustedHosts para Enter-PSSession (opcional, administrador)
 │   ├── Set-LabIP.ps1               # provisioner: IP fija del lab en cada VM
 │   ├── Optimize-LabGuest.ps1       # provisioner: menos consumo en las VMs
 │   └── Test-LabTools.ps1           # versiones de las herramientas del host

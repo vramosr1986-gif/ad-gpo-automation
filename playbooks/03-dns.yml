@@ -1,0 +1,6 @@
+---
+- name: Configurar el DNS de los controladores de dominio
+  hosts: domain_controllers
+  gather_facts: false
+  roles:
+    - ad_dns

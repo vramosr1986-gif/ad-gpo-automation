@@ -1,0 +1,76 @@
+---
+# DNS de los DC: reenviadores, zona inversa, aging/scavenging y registros estáticos.
+# Se ejecuta en todos los DC; la estrategia lineal garantiza que la zona inversa
+# (tarea del DC raíz) existe antes de que el DC hijo registre su PTR.
+
+- name: Configurar los reenviadores DNS del servidor (dns_forwarders)
+  ansible.windows.win_powershell:
+    script: |
+      param([string[]]$Forwarders)
+      $current = @((Get-DnsServerForwarder).IPAddress | ForEach-Object { $_.IPAddressToString })
+      if (($current -join ',') -eq ($Forwarders -join ',')) {
+        $Ansible.Changed = $false
+        return
+      }
+      Set-DnsServerForwarder -IPAddress $Forwarders
+    parameters:
+      Forwarders: "{{ dns_forwarders }}"
+
+- name: Crear la zona inversa {{ dns_reverse_zone }} replicada en todo el bosque (solo DC raíz)
+  ansible.windows.win_dns_zone:
+    name: "{{ dns_reverse_zone }}"
+    type: primary
+    replication: forest
+    dynamic_update: secure
+    state: present
+  when: "'dc_root' in group_names"
+
+- name: Activar el aging en las zonas y el scavenging en el servidor DNS
+  ansible.windows.win_powershell:
+    script: |
+      param([string[]]$Zones, [timespan]$Interval)
+      $Ansible.Changed = $false
+      foreach ($zone in $Zones) {
+        $a = Get-DnsServerZoneAging -Name $zone
+        if (-not $a.AgingEnabled -or $a.NoRefreshInterval -ne $Interval -or $a.RefreshInterval -ne $Interval) {
+          Set-DnsServerZoneAging -Name $zone -Aging $true -NoRefreshInterval $Interval -RefreshInterval $Interval
+          $Ansible.Changed = $true
+        }
+      }
+      $s = Get-DnsServerScavenging
+      if (-not $s.ScavengingState -or $s.ScavengingInterval -ne $Interval) {
+        Set-DnsServerScavenging -ScavengingState $true -ScavengingInterval $Interval
+        $Ansible.Changed = $true
+      }
+    parameters:
+      Zones: "{{ dns_aging_zones }}"
+      Interval: "{{ dns_aging_interval }}"
+
+- name: Crear los registros estáticos de dns_records en la zona {{ ad_dc_domain }}
+  ansible.windows.win_dns_record:
+    zone: "{{ item.zone }}"
+    name: "{{ item.name }}"
+    type: "{{ item.type }}"
+    value: "{{ item.value }}"
+    state: present
+  loop: "{{ dns_records | selectattr('zone', 'eq', ad_dc_domain) }}"
+  loop_control:
+    label: "{{ item.name }}.{{ item.zone }} {{ item.type }} {{ item.value }}"
+
+# Los PTR de los DC los crea el registro dinámico, no el código: basta con forzarlo
+# una vez si falta. La consulta va al DC raíz, que tiene la zona desde la tarea anterior.
+- name: Forzar el registro dinámico del PTR propio si todavía no existe
+  ansible.windows.win_powershell:
+    script: |
+      param([string]$Ip, [string]$Server)
+      if (Resolve-DnsName $Ip -Type PTR -Server $Server -DnsOnly -ErrorAction SilentlyContinue) {
+        $Ansible.Changed = $false
+        return
+      }
+      Register-DnsClient
+    parameters:
+      Ip: "{{ ansible_host }}"
+      Server: "{{ hostvars[ad_parent_dc | default(inventory_hostname)].ansible_host }}"
+
+- name: Comprobar la resolución DNS
+  ansible.builtin.import_tasks: verify.yml

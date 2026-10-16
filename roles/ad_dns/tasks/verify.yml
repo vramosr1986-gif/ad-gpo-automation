@@ -1,0 +1,36 @@
+---
+# Cada DC consulta a su propio servidor DNS (escucha solo en la IP del lab).
+# Reintenta porque el registro dinámico del PTR y la replicación tardan unos segundos.
+
+- name: Comprobar que resuelven los registros estáticos, el PTR propio y un nombre de Internet
+  ansible.windows.win_powershell:
+    script: |
+      param([string]$Server, [string]$Fqdn, [object[]]$Records, [string]$External)
+      function Get-IPv4([string]$Name) {
+        @(Resolve-DnsName $Name -Server $Server -DnsOnly -ErrorAction SilentlyContinue |
+          Where-Object Type -eq 'A' | ForEach-Object IPAddress)
+      }
+      $results = [ordered]@{}
+      foreach ($r in $Records) {
+        $ips = Get-IPv4 "$($r.name).$($r.zone)"
+        $results["$($r.name).$($r.zone)"] = if ($r.type -eq 'A') { $ips -contains $r.value } else { $ips.Count -gt 0 }
+      }
+      $ptr = (Resolve-DnsName $Server -Type PTR -Server $Server -DnsOnly -ErrorAction SilentlyContinue).NameHost
+      $results["PTR $Server"] = $ptr -eq $Fqdn
+      $results[$External] = (Get-IPv4 $External).Count -gt 0
+      $Ansible.Failed = $results.Values -contains $false
+      $Ansible.Changed = $false
+      $results
+    parameters:
+      Server: "{{ ansible_host }}"
+      Fqdn: "{{ inventory_hostname | lower }}.{{ ad_dc_domain }}"
+      Records: "{{ dns_records }}"
+      External: "{{ dns_external_check }}"
+  register: dns_check
+  until: dns_check is succeeded
+  retries: 12
+  delay: 10
+
+- name: Mostrar el resultado de cada comprobación DNS
+  ansible.builtin.debug:
+    var: dns_check.output[0]

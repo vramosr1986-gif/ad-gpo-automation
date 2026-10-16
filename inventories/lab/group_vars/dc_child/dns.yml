@@ -1,0 +1,6 @@
+# El DC hijo reenvía todo lo que no es suyo al DC del dominio padre
+dns_forwarders:
+  - "{{ hostvars[ad_parent_dc].ansible_host }}"
+
+dns_aging_zones:
+  - "{{ ad_dc_domain }}"

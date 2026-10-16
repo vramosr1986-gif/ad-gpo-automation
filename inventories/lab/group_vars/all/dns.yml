@@ -1,0 +1,16 @@
+# DNS del lab como código. Lo aplica el rol ad_dns (playbook 03-dns.yml).
+
+# Zona inversa de la red del lab (/24): 192.168.56.0/24 → 56.168.192.in-addr.arpa
+dns_reverse_zone: "{{ (ad_lab_network.split('/')[0].split('.')[:3] | reverse | join('.')) ~ '.in-addr.arpa' }}"
+
+# Aging y scavenging: un registro dinámico que no se refresca en 14 días (7 + 7) se borra
+dns_aging_interval: "7.00:00:00"
+
+# Nombre de Internet con el que se comprueba que los reenviadores funcionan
+dns_external_check: microsoft.com
+
+# Registros estáticos. Cada DC gestiona los de la zona de su dominio.
+dns_records:
+  - { zone: lab.local, name: intranet, type: A, value: 192.168.56.20 }
+  - { zone: lab.local, name: wiki, type: CNAME, value: intranet.lab.local }
+  - { zone: emea.lab.local, name: portal, type: CNAME, value: intranet.lab.local }

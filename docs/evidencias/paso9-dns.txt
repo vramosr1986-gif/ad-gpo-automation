@@ -1,0 +1,48 @@
+# ansible-playbook playbooks/03-dns.yml (primera ejecución, 2026-10-16; nombres de tarea anteriores al renombrado)
+PLAY [Configurar el DNS de los controladores de dominio] ***********************
+TASK [ad_dns : Reenviadores DNS] ***********************************************
+changed: [DC01]
+ok: [DC02]
+TASK [ad_dns : Zona inversa 56.168.192.in-addr.arpa, replicada en todo el bosque] ***
+skipping: [DC02]
+changed: [DC01]
+TASK [ad_dns : Aging en las zonas y scavenging en el servidor] *****************
+changed: [DC01]
+changed: [DC02]
+TASK [ad_dns : Registros estáticos de la zona lab.local] ***********************
+changed: [DC02] => (item=portal.emea.lab.local CNAME intranet.lab.local)
+changed: [DC01] => (item=intranet.lab.local A 192.168.56.20)
+changed: [DC01] => (item=wiki.lab.local CNAME intranet.lab.local)
+TASK [ad_dns : Registrar el PTR propio en la zona inversa] *********************
+changed: [DC02]
+changed: [DC01]
+TASK [ad_dns : Resolver los registros estáticos, el PTR propio y un nombre de Internet] ***
+ok: [DC01]
+FAILED - RETRYING: [DC02]: ad_dns : Resolver los registros estáticos, el PTR propio y un nombre de Internet (11 retries left).
+FAILED - RETRYING: [DC02]: ad_dns : Resolver los registros estáticos, el PTR propio y un nombre de Internet (10 retries left).
+FAILED - RETRYING: [DC02]: ad_dns : Resolver los registros estáticos, el PTR propio y un nombre de Internet (9 retries left).
+FAILED - RETRYING: [DC02]: ad_dns : Resolver los registros estáticos, el PTR propio y un nombre de Internet (8 retries left).
+ok: [DC02]
+TASK [ad_dns : Resultado de las comprobaciones] ********************************
+ok: [DC02] => {
+    "dns_check.output[0]": {
+        "PTR 192.168.56.11": true,
+        "intranet.lab.local": true,
+        "microsoft.com": true,
+        "portal.emea.lab.local": true,
+        "wiki.lab.local": true
+    }
+}
+ok: [DC01] => {
+    "dns_check.output[0]": {
+        "PTR 192.168.56.10": true,
+        "intranet.lab.local": true,
+        "microsoft.com": true,
+        "portal.emea.lab.local": true,
+        "wiki.lab.local": true
+    }
+}
+PLAY RECAP *********************************************************************
+DC01                       : ok=7    changed=5    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+DC02                       : ok=6    changed=3    unreachable=0    failed=0    skipped=1    rescued=0    ignored=0   
+

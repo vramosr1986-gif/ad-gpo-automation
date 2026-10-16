@@ -1,0 +1,9 @@
+# El DC raíz resuelve Internet con reenviadores públicos (salen por la NIC NAT)
+dns_forwarders:
+  - 1.1.1.1
+  - 9.9.9.9
+
+# Zonas con aging en este DC (la inversa es del bosque: se configura solo aquí)
+dns_aging_zones:
+  - "{{ ad_dc_domain }}"
+  - "{{ dns_reverse_zone }}"

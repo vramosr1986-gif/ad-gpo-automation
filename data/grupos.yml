@@ -1,0 +1,5 @@
+# Grupos de seguridad globales (GG_), uno por departamento. Viven en OU=Grupos.
+ad_groups:
+  - { name: GG_IT, description: Personal de IT }
+  - { name: GG_RRHH, description: Personal de Recursos Humanos }
+  - { name: GG_Ventas, description: Personal de Ventas }

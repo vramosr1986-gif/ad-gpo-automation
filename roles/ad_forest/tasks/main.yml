@@ -3,7 +3,7 @@
 #   dc_root  → crea el bosque (microsoft.ad.domain)
 #   dc_child → crea un dominio hijo en el bosque existente (microsoft.ad.domain_child)
 
-- name: Evitar que las NIC que no son del lab se registren en DNS
+- name: Desactivar el registro en DNS de las NIC que no son del lab (NAT)
   ansible.windows.win_powershell:
     script: |
       $labIf = (Get-NetIPAddress -AddressFamily IPv4 -IPAddress '{{ ansible_host }}').InterfaceIndex
@@ -15,7 +15,7 @@
           $Ansible.Changed = $true
         }
 
-- name: Resolver DNS con el DC del dominio padre
+- name: Configurar el DC del dominio padre como servidor DNS (solo DC hijo)
   ansible.windows.win_powershell:
     script: |
       param([string[]]$Servers)
@@ -31,18 +31,20 @@
       Servers: "{{ ad_dns_servers }}"
   when: "'dc_child' in group_names"
 
-- name: Instalar el rol AD DS y sus herramientas
+- name: Instalar el rol AD DS y sus herramientas de administración
   ansible.windows.win_feature:
     name: AD-Domain-Services
     include_management_tools: true
     state: present
   register: adds_feature
 
-- name: Reiniciar si la instalación del rol lo requiere
+# Solo si el rol se acaba de instalar: un reinicio pendiente por otro motivo
+# no debe reiniciar un DC en una ejecución que no cambia nada
+- name: Reiniciar solo si el rol AD DS se acaba de instalar y lo pide
   ansible.windows.win_reboot:
-  when: adds_feature.reboot_required
+  when: adds_feature is changed and adds_feature.reboot_required
 
-- name: Crear el bosque {{ ad_domain_name }}
+- name: Crear el bosque {{ ad_domain_name }} y promover a DC (solo DC raíz)
   microsoft.ad.domain:
     dns_domain_name: "{{ ad_domain_name }}"
     domain_netbios_name: "{{ ad_netbios_name }}"
@@ -54,7 +56,7 @@
     reboot_timeout: 1800
   when: "'dc_root' in group_names"
 
-- name: Crear el dominio hijo {{ ad_dc_domain }}
+- name: Crear el dominio hijo {{ ad_dc_domain }} y promover a DC (solo DC hijo)
   microsoft.ad.domain_child:
     dns_domain_name: "{{ ad_dc_domain }}"
     domain_admin_user: "{{ ad_enterprise_admin_user }}"
@@ -67,7 +69,7 @@
     reboot_timeout: 1800
   when: "'dc_child' in group_names"
 
-- name: Esperar a que Active Directory responda
+- name: Esperar a que Active Directory responda tras la promoción
   ansible.windows.win_powershell:
     script: (Get-ADDomain -ErrorAction Stop).DNSRoot
   register: ad_ready
@@ -76,7 +78,7 @@
   delay: 20
   changed_when: false
 
-- name: Servidor DNS escuchando solo en la IP del lab
+- name: Hacer que el servidor DNS escuche solo en la IP del lab
   ansible.windows.win_powershell:
     script: |
       $want = '{{ ansible_host }}'
@@ -88,7 +90,7 @@
       dnscmd /ResetListenAddresses $want | Out-Null
       Restart-Service DNS
 
-- name: Eliminar registros A que apunten fuera de la red del lab
+- name: Borrar de las zonas del dominio los registros A con IP fuera del lab
   ansible.windows.win_powershell:
     script: |
       $labPrefix = '{{ ansible_host.rsplit(".", 1)[0] }}.*'
@@ -104,7 +106,7 @@
 
 # La delegación del dominio hijo crea en la zona del padre un registro glue por
 # cada IP del DC hijo, también la NAT. Esa zona solo está en el DC del padre.
-- name: Eliminar registros glue fuera de la red del lab en la zona del padre
+- name: Borrar en la zona del padre los registros glue con IP fuera del lab (desde el DC raíz)
   ansible.windows.win_powershell:
     script: |
       $labPrefix = '{{ ansible_host.rsplit(".", 1)[0] }}.*'
@@ -120,3 +122,15 @@
   # delegate_to se evalúa antes que when: el default evita el fallo en el DC raíz
   delegate_to: "{{ ad_parent_dc | default(inventory_hostname) }}"
   when: "'dc_child' in group_names"
+# Papelera de reciclaje de AD: se activa una vez para todo el bosque y no se puede desactivar
+- name: Activar la papelera de reciclaje de AD en el bosque (solo DC raíz, irreversible)
+  ansible.windows.win_powershell:
+    script: |
+      $feature = Get-ADOptionalFeature -Identity 'Recycle Bin Feature'
+      if ($feature.EnabledScopes.Count -gt 0) {
+        $Ansible.Changed = $false
+        return
+      }
+      Enable-ADOptionalFeature -Identity $feature -Scope ForestOrConfigurationSet `
+        -Target '{{ ad_domain_name }}' -Confirm:$false
+  when: "'dc_root' in group_names"

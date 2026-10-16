@@ -1,0 +1,41 @@
+---
+# Grupos y usuarios de prueba desde data/. Se ejecuta en el DC raíz, después de ad_ou.
+# Solo asegura el estado inicial: lo que cambien las acciones de operación
+# (deshabilitar, contraseña, grupos extra) no se revierte al volver a ejecutarlo.
+
+- name: Crear los grupos globales de seguridad de ad_groups en OU=Grupos
+  microsoft.ad.group:
+    identity: "{{ item.name }}"
+    name: "{{ item.name }}"
+    path: "OU=Grupos,{{ ad_domain_dn }}"
+    scope: global
+    category: security
+    description: "{{ item.description }}"
+    state: present
+  loop: "{{ ad_groups }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Crear los usuarios de ad_users en la OU de su departamento y añadirlos a su grupo
+  microsoft.ad.user:
+    identity: "{{ item.sam }}"
+    name: "{{ item.nombre }} {{ item.apellido }}"
+    sam_account_name: "{{ item.sam }}"
+    upn: "{{ item.sam }}@{{ ad_domain_name }}"
+    firstname: "{{ item.nombre }}"
+    surname: "{{ item.apellido }}"
+    display_name: "{{ item.nombre }} {{ item.apellido }}"
+    path: "OU={{ item.departamento }},OU=Usuarios,{{ ad_domain_dn }}"
+    attributes:
+      set:
+        department: "{{ item.departamento }}"
+    password: "{{ ad_test_user_password }}"
+    update_password: on_create
+    groups:
+      add: "{{ item.grupos }}"
+    state: present
+  loop: "{{ ad_users }}"
+  loop_control:
+    label: "{{ item.sam }} → {{ item.departamento }}"
+  # La tarea lleva la contraseña: que no aparezca en la salida ni en el historial del orquestador
+  no_log: true

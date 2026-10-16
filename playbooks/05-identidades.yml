@@ -1,0 +1,12 @@
+---
+- name: OUs, grupos y usuarios de prueba
+  hosts: dc_root
+  gather_facts: false
+  vars_files:
+    - ../data/grupos.yml
+    - ../data/usuarios.yml
+  vars:
+    ad_test_user_password: "{{ vault_ad_test_user_password }}"
+  roles:
+    - ad_ou
+    - ad_users_groups

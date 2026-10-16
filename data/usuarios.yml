@@ -1,0 +1,10 @@
+# Usuarios de prueba para las acciones de operación (playbooks/ops).
+# La OU sale del departamento: OU=<departamento>,OU=Usuarios,<dominio>.
+# La contraseña inicial está en el vault (vault_ad_test_user_password).
+ad_users:
+  - { sam: ana.garcia, nombre: Ana, apellido: García, departamento: IT, grupos: [GG_IT] }
+  - { sam: luis.martin, nombre: Luis, apellido: Martín, departamento: IT, grupos: [GG_IT] }
+  - { sam: marta.lopez, nombre: Marta, apellido: López, departamento: RRHH, grupos: [GG_RRHH] }   # restablecer contraseña
+  - { sam: pedro.sanz, nombre: Pedro, apellido: Sanz, departamento: Ventas, grupos: [GG_Ventas] }  # desbloquear
+  - { sam: elena.ruiz, nombre: Elena, apellido: Ruiz, departamento: Ventas, grupos: [GG_Ventas] }  # deshabilitar (baja)
+  - { sam: temp.borrar, nombre: Temporal, apellido: Borrar, departamento: Ventas, grupos: [] }     # papelera de AD

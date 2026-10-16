@@ -1,0 +1,4 @@
+# Paquetes de Python del nodo de control (WSL), con versión fija.
+# Las colecciones de Ansible van aparte: collections/requirements.yml
+ansible-core==2.21.5
+pywinrm==0.5.0

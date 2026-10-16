@@ -13,7 +13,7 @@ Aquí voy contando paso a paso cómo lo he montado y los problemas que me encont
 
 Además: zona DNS inversa, reenviadores, aging y scavenging; papelera de reciclaje de AD; 8 OU, 3 grupos y 6 usuarios de prueba.
 
-**Montarlo de una vez:** ver [Recrear el lab desde cero](#recrear-el-lab-desde-cero).
+**Montarlo de una vez:** `.\scripts\Deploy-Lab.ps1`. Ver [Paso 11 — Montar el lab con un solo comando](#paso-11--montar-el-lab-con-un-solo-comando).
 
 ## Hoja de ruta
 
@@ -29,8 +29,8 @@ Además: zona DNS inversa, reenviadores, aging y scavenging; papelera de recicla
 - [x] Paso 8 — SRV01: servidor miembro unido al dominio
 - [x] Paso 9 — DNS como código
 - [x] Paso 10 — OU, grupos, usuarios de prueba y papelera de reciclaje
-- [x] Paso 11 — Recrear el lab desde cero con un solo playbook
-- [ ] Prueba completa: `vagrant destroy` y reconstrucción con `site.yml`
+- [x] Paso 11 — Montar el lab con un solo comando (`scripts/Deploy-Lab.ps1`)
+- [ ] Prueba completa: lab montado desde cero solo con `Deploy-Lab.ps1`
 
 ## Cómo he montado el entorno
 
@@ -912,52 +912,58 @@ La ejecución que lo destapó: todo `ok` salvo el reinicio.
 
 ![01-deploy-forest.yml: Reiniciar si la instalación del rol lo requiere en changed](docs/img/capturas/paso6-playbook01-reinicio.png)
 
-### Paso 11 — Recrear el lab desde cero
+### Paso 11 — Montar el lab con un solo comando
 
-Todo lo anterior se puede montar con dos comandos. Los pasos 1 a 10 explican cómo y por qué; esta sección es la receta.
+Los pasos 1 a 10 explican cómo y por qué; esta sección es la receta para que cualquiera (o yo dentro de un año) lo monte sin esfuerzo.
 
-**1. Una sola vez en el equipo** (no está en código porque es configuración del host):
+**1. Una sola vez en el equipo.** Es configuración del host y no se puede automatizar desde el repo (instaladores, red de VMware, WSL):
 
 | Qué | Dónde se explica |
 |---|---|
-| VMware Workstation, Vagrant, plugin y Vagrant VMware Utility (con el arreglo del registro) | Paso 1 |
+| VMware Workstation, Vagrant, plugin `vagrant-vmware-desktop` y Vagrant VMware Utility (con el arreglo del registro) | Paso 1 |
 | Red **VMnet1** host-only `192.168.56.0/24` sin DHCP, y el equipo con `192.168.56.1` | Paso 3 |
-| WSL con el entorno de Ansible y `/etc/wsl.conf` con `metadata` | Pasos 4 y 5 |
-| La **clave del vault** en `~/.ansible/lab-vault-pass` (permisos `600`) | Paso 5 y abajo |
-| `TrustedHosts` para conectarse por PowerShell a las VMs | [Acceso a las VMs](#acceso-a-las-vms) |
+| WSL con Ubuntu | Paso 4 |
 
-> **La clave del vault es lo único que no se puede recuperar.** Está fuera del repo a propósito. Guardo una copia en mi gestor de contraseñas: sin ella, los `vault.yml` no se pueden descifrar y habría que crearlos de nuevo.
-
-**2. Las VMs** (PowerShell, en la raíz del repo):
+**2. Clonar el repo y lanzar el script** (PowerShell, no hace falta administrador):
 
 ```powershell
-vagrant up --provider vmware_desktop
+git clone https://github.com/vramosr1986-gif/ad-gpo-automation.git
+cd ad-gpo-automation
+.\scripts\Deploy-Lab.ps1
 ```
 
-**3. Todo el AD** (WSL):
+`scripts/Deploy-Lab.ps1` hace todo lo demás, en orden, y se para con un mensaje claro si algo falla:
+
+| Fase | Qué hace | Si ya estaba hecho |
+|---|---|---|
+| 1. Requisitos | comprueba VMware, Vagrant y su plugin, el servicio `VagrantVMware`, la red VMnet1 y WSL. Si falta algo, dice en qué paso del README se instala | — |
+| 2. WSL | lanza `scripts/setup-wsl.sh`: entorno de Python, Ansible y `pywinrm` con versión fija (`requirements.txt`), colecciones (`collections/requirements.yml`) y vault | no reinstala nada |
+| 3. VMs | `vagrant up --provider vmware_desktop`: crea DC01, DC02 y SRV01 y les pone la IP del lab | no hace nada |
+| 4. WinRM | espera a que las tres VMs respondan en `192.168.56.10`, `.11` y `.20` | — |
+| 5. AD | `playbooks/site.yml`: bosque, papelera, dominio hijo, DNS, OU, SRV01 unido al dominio, grupos y usuarios. Salida en `logs/` (fuera de git) | `changed=0` |
+
+Con `-ComprobarIdempotencia` aplica `site.yml` una segunda vez y avisa si algún host termina con `changed` distinto de 0.
+
+**El vault.** Los `vault.yml` del repo están cifrados con mi clave (`~/.ansible/lab-vault-pass`), que no está en el repo. `scripts/setup-wsl.sh` lo resuelve así:
+
+- **Con la clave** (yo): comprueba que abre los dos `vault.yml` y sigue.
+- **Sin la clave** (otra persona): genera una clave nueva y vuelve a crear los dos `vault.yml` con sus contraseñas. Pide la de `vagrant` (Enter = `vagrant`, la de la box), la de DSRM y la inicial de los usuarios de prueba. Las de las cuentas de servicio las genera aleatorias.
+
+> **La clave del vault es lo único que no se puede recuperar.** Guardo una copia en mi gestor de contraseñas: sin ella, los `vault.yml` no se pueden descifrar y habría que crearlos de nuevo.
+
+**Para empezar de cero** (borra las VMs y todo lo que tienen): `vagrant destroy -f` y otra vez `.\scripts\Deploy-Lab.ps1`.
+
+**A mano, sin el script** (lo mismo, por partes):
+
+```powershell
+vagrant up --provider vmware_desktop          # PowerShell
+```
 
 ```bash
+bash scripts/setup-wsl.sh                     # WSL, en la raíz del repo
 source ~/.venvs/ansible/bin/activate
-cd /mnt/c/Users/vramo/ad-gpo-automation
-ansible-galaxy collection install -r collections/requirements.yml
-ansible-playbook playbooks/site.yml
+ANSIBLE_CONFIG=$PWD/ansible.cfg ansible-playbook playbooks/site.yml
 ```
-
-`playbooks/site.yml` importa los playbooks del 01 al 05 en orden. Sobre un lab ya montado, termina con `changed=0`.
-
-**Todo de una vez** (PowerShell, en la raíz del repo): `scripts/Rebuild-Lab.ps1` hace los pasos 2 y 3 seguidos y comprueba la idempotencia. Pide escribir `SI` antes de borrar las VMs.
-
-```powershell
-.\scripts\Rebuild-Lab.ps1                # borra las VMs, las recrea y aplica site.yml dos veces
-.\scripts\Rebuild-Lab.ps1 -SinDestruir   # solo site.yml dos veces (para relanzar si falla un playbook)
-```
-
-| Fase | Qué hace |
-|---|---|
-| 1 | `vagrant destroy -f` y `vagrant up --provider vmware_desktop` |
-| 2 | espera a que las tres VMs respondan por WinRM en su IP del lab (`192.168.56.10`, `.11`, `.20`) |
-| 3 | `playbooks/site.yml` en WSL; salida en `docs/evidencias/paso11-site-1-despliegue.txt` |
-| 4 | `playbooks/site.yml` otra vez; salida en `docs/evidencias/paso11-site-2-idempotencia.txt`. Avisa si algún host tiene `changed` distinto de 0 |
 
 #### Problemas que me encontré
 
@@ -1031,6 +1037,12 @@ ad-gpo-automation/
 │   ├── ad_ou/                      # OU y cuentas de equipo preconfiguradas
 │   ├── ad_member/                  # unión de un servidor al dominio
 │   └── ad_users_groups/            # grupos y usuarios desde data/
-├── scripts/                        # Set-LabIP.ps1, Optimize-LabGuest.ps1, Test-LabTools.ps1
+├── requirements.txt                # Ansible y pywinrm con versión fija (WSL)
+├── scripts/
+│   ├── Deploy-Lab.ps1              # monta el lab entero: requisitos, WSL, VMs y AD
+│   ├── setup-wsl.sh                # nodo de control en WSL: Ansible, colecciones y vault
+│   ├── Set-LabIP.ps1               # provisioner: IP fija del lab en cada VM
+│   ├── Optimize-LabGuest.ps1       # provisioner: menos consumo en las VMs
+│   └── Test-LabTools.ps1           # versiones de las herramientas del host
 └── docs/                           # evidencias de ejecución e imágenes
 ```

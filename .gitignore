@@ -19,3 +19,6 @@ desktop.ini
 # Ficheros temporales de vim
 *.swp
 *.swo
+
+# Salidas de scripts/Deploy-Lab.ps1
+logs/

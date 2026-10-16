@@ -956,6 +956,18 @@ ansible-playbook playbooks/site.yml
 
 Vagrant esperaba WinRM en `127.0.0.1:2229` y nunca llegaba. Solución en el `Vagrantfile`, en cada VM: `vm.enable_vmrun_ip_lookup = false`, para que la IP se saque del DHCP de la NAT, que siempre es la correcta. Se aplica con `vagrant reload`.
 
+### Cuentas y contraseñas del lab
+
+Todas las contraseñas están en el vault; los `vars.yml` solo las referencian. Para verlas: `ansible-vault view <fichero>` (nunca `decrypt`, que deja el fichero descifrado en el disco).
+
+| Variable (vault) | Fichero | Cuenta | Para qué |
+|---|---|---|---|
+| `vault_windows_password` | `group_vars/windows/vault.yml` | `vagrant` (local; tras crear el bosque `LAB\vagrant`, Domain Admins y Enterprise Admins) | conexión WinRM de Ansible (`ansible_password`), crear el dominio hijo (`ad_enterprise_admin_password`) y unir SRV01 (`ad_join_password`) |
+| `vault_ad_dsrm_password` | `group_vars/domain_controllers/vault.yml` | `Administrator` local de cada DC en modo DSRM | arrancar un DC sin AD para recuperarlo; no es una cuenta del dominio |
+| `vault_ad_test_user_password` | `group_vars/domain_controllers/vault.yml` | usuarios de prueba de `data/usuarios.yml` | contraseña inicial al crearlos (`playbooks/05-identidades.yml`) |
+| `vault_svc_join_password` | `group_vars/windows/vault.yml` | `svc_join` (**pendiente de crear**) | unir equipos al dominio con permiso solo sobre `OU=Servidores`, en lugar de `vagrant` |
+| `vault_svc_ansible_password` | `group_vars/windows/vault.yml` | `svc_ansible` (**pendiente de crear**) | conexión de Ansible y de Semaphore (ad-ops-portal) con los permisos justos, en lugar de `vagrant` |
+
 ### Acceso a las VMs
 
 Ansible entra por la IP del lab. Para trabajar a mano hago lo mismo, en vez de usar los puertos reenviados por Vagrant.

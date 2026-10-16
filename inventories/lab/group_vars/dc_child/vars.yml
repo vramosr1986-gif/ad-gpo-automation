@@ -7,6 +7,7 @@ ad_dns_servers:
   - "{{ hostvars[ad_parent_dc].ansible_host }}"
   - "{{ ansible_host }}"
 
-# Crear un dominio hijo exige una cuenta de Enterprise Admins del bosque
+# Crear un dominio hijo exige una cuenta de Enterprise Admins del bosque.
+# Es la misma cuenta vagrant de la conexión: vault_windows_password en group_vars/windows/vault.yml
 ad_enterprise_admin_user: "vagrant@{{ ad_domain_name }}"
 ad_enterprise_admin_password: "{{ vault_windows_password }}"

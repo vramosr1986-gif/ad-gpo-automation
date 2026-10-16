@@ -6,6 +6,8 @@
     - ../data/grupos.yml
     - ../data/usuarios.yml
   vars:
+    # Contraseña inicial de los usuarios de prueba de data/usuarios.yml (no es de ninguna
+    # cuenta de administración). Valor: vault_ad_test_user_password en group_vars/domain_controllers/vault.yml
     ad_test_user_password: "{{ vault_ad_test_user_password }}"
   roles:
     - ad_ou

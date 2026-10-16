@@ -9,6 +9,7 @@ ad_dns_servers:
 ad_member_ou: "OU=Servidores,{{ ad_domain_dn }}"
 
 # Cuenta para unir equipos. Pendiente: sustituirla por una cuenta delegada
-# que solo pueda crear equipos en ad_member_ou.
+# que solo pueda crear equipos en ad_member_ou (svc_join, vault_svc_join_password).
+# De momento es la cuenta vagrant: vault_windows_password en group_vars/windows/vault.yml
 ad_join_user: "vagrant@{{ ad_domain_name }}"
 ad_join_password: "{{ vault_windows_password }}"

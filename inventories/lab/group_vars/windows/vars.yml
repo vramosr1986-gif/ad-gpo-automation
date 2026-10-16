@@ -2,5 +2,9 @@ ansible_connection: winrm
 ansible_port: 5985
 ansible_winrm_transport: ntlm
 ansible_winrm_server_cert_validation: ignore
+# Cuenta con la que Ansible se conecta por WinRM a las tres VMs (DC01, DC02, SRV01).
+# vagrant es el administrador local que trae la box de Vagrant; al crear el bosque
+# pasa a ser LAB\vagrant, miembro de Domain Admins y Enterprise Admins.
+# Contraseña: vault_windows_password en group_vars/windows/vault.yml
 ansible_user: vagrant
 ansible_password: "{{ vault_windows_password }}"

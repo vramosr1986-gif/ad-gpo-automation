@@ -1,1 +1,5 @@
+# Contraseña de DSRM (modo de restauración de servicios de directorio): la del
+# Administrator local de cada DC, que solo sirve para arrancar el DC sin AD y
+# recuperarlo. No es una cuenta del dominio.
+# Valor: vault_ad_dsrm_password en group_vars/domain_controllers/vault.yml
 ad_dsrm_password: "{{ vault_ad_dsrm_password }}"

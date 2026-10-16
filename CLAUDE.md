@@ -15,6 +15,9 @@
   Mal: "la OU es Servidores". Bien: "ad_member_ou (inventories/lab/group_vars/member_servers/vars.yml) vale OU=Servidores,DC=lab,DC=local".
 - Si el valor sale de otras variables, enseña la cadena hasta el valor final.
 - Cuando pidas lago que requiera un comando pon el comando que necesito
+- Cuando me pidas una contraseña, di de qué cuenta es y en qué fichero y variable está guardada
+  (por ejemplo, vault_windows_password en inventories/lab/group_vars/windows/vault.yml de ad-gpo-automation),
+  y el comando para verla. Nunca la muestres tú.
 ## Ansible
 - Todo idempotente: una segunda ejecución debe dar changed=0.
 - Usa el módulo de la colección si existe; win_powershell solo si no hay módulo,

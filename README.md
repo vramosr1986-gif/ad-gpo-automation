@@ -945,6 +945,20 @@ ansible-playbook playbooks/site.yml
 
 `playbooks/site.yml` importa los playbooks del 01 al 05 en orden. Sobre un lab ya montado, termina con `changed=0`.
 
+**Todo de una vez** (PowerShell, en la raíz del repo): `scripts/Rebuild-Lab.ps1` hace los pasos 2 y 3 seguidos y comprueba la idempotencia. Pide escribir `SI` antes de borrar las VMs.
+
+```powershell
+.\scripts\Rebuild-Lab.ps1                # borra las VMs, las recrea y aplica site.yml dos veces
+.\scripts\Rebuild-Lab.ps1 -SinDestruir   # solo site.yml dos veces (para relanzar si falla un playbook)
+```
+
+| Fase | Qué hace |
+|---|---|
+| 1 | `vagrant destroy -f` y `vagrant up --provider vmware_desktop` |
+| 2 | espera a que las tres VMs respondan por WinRM en su IP del lab (`192.168.56.10`, `.11`, `.20`) |
+| 3 | `playbooks/site.yml` en WSL; salida en `docs/evidencias/paso11-site-1-despliegue.txt` |
+| 4 | `playbooks/site.yml` otra vez; salida en `docs/evidencias/paso11-site-2-idempotencia.txt`. Avisa si algún host tiene `changed` distinto de 0 |
+
 #### Problemas que me encontré
 
 **`vagrant up DC01` se quedaba en *Waiting for machine to boot*.** Al arrancar, Vagrant pregunta a VMware (`vmrun`) la IP de la VM para reenviarle los puertos (WinRM, RDP). VMware le devolvió la IP del lab, `192.168.56.10`, y no la de la NAT. La tabla de reenvíos de la NAT (`C:\ProgramData\VMware\vmnetnat.conf`) quedó así:

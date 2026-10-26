@@ -1,0 +1,8 @@
+---
+- name: GPO como código
+  hosts: dc_root
+  gather_facts: false
+  vars_files:
+    - ../data/gpos.yml
+  roles:
+    - ad_gpo

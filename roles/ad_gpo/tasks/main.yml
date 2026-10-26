@@ -1,0 +1,57 @@
+---
+# GPO como código: crea las GPO de ad_gpos (data/gpos.yml), aplica sus ajustes de
+# registro y las vincula a sus OU. Solo toca las GPO que declara: las Default no.
+# Dominio: ad_dc_domain (group_vars del grupo del DC), así sirve para el raíz y el hijo.
+
+- name: Asegurar la consola y el módulo GroupPolicy (GPMC)
+  ansible.windows.win_feature:
+    name: GPMC
+    state: present
+
+- name: GPO de ad_gpos (crear, ajustes y vínculos)
+  ansible.windows.win_powershell:
+    script: |
+      param([string]$Name, [string]$Comment, [string]$Domain, [object[]]$Settings, [string[]]$Links)
+      $ErrorActionPreference = 'Stop'
+      $Ansible.Changed = $false
+
+      # 1. La GPO
+      $gpo = Get-GPO -Name $Name -Domain $Domain -ErrorAction SilentlyContinue
+      if (-not $gpo) {
+        $gpo = New-GPO -Name $Name -Comment $Comment -Domain $Domain
+        $Ansible.Changed = $true
+      }
+
+      # 2. Ajustes de registro: solo se escriben si faltan o tienen otro valor
+      foreach ($s in $Settings) {
+        $cur = Get-GPRegistryValue -Name $Name -Domain $Domain -Key $s.key -ValueName $s.value_name -ErrorAction SilentlyContinue
+        $curValue = if ($cur) { "$($cur.Value)".TrimEnd([char]0) }
+        if (-not $cur -or "$($cur.Type)" -ne $s.type -or $curValue -ne "$($s.value)") {
+          $value = if ($s.type -eq 'DWord') { [int]$s.value } else { [string]$s.value }
+          Set-GPRegistryValue -Name $Name -Domain $Domain -Key $s.key -ValueName $s.value_name -Type $s.type -Value $value | Out-Null
+          $Ansible.Changed = $true
+        }
+      }
+
+      # 3. Vínculos: crearlos si no existen y activarlos si están deshabilitados
+      foreach ($target in $Links) {
+        $link = (Get-GPInheritance -Target $target -Domain $Domain).GpoLinks | Where-Object DisplayName -eq $Name
+        if (-not $link) {
+          New-GPLink -Name $Name -Target $target -Domain $Domain -LinkEnabled Yes | Out-Null
+          $Ansible.Changed = $true
+        } elseif (-not $link.Enabled) {
+          Set-GPLink -Name $Name -Target $target -Domain $Domain -LinkEnabled Yes | Out-Null
+          $Ansible.Changed = $true
+        }
+      }
+    parameters:
+      Name: "{{ item.name }}"
+      Comment: "{{ item.comment | default('') }}"
+      Domain: "{{ ad_dc_domain }}"
+      Settings: "{{ item.settings }}"
+      Links: "{{ item.links | map('regex_replace', '$', ',' ~ ad_gpo_domain_dn) | list }}"
+  vars:
+    ad_gpo_domain_dn: "DC={{ ad_dc_domain.split('.') | join(',DC=') }}"
+  loop: "{{ ad_gpos }}"
+  loop_control:
+    label: "{{ item.name }} → {{ item.links | join(', ') }}"

@@ -15,3 +15,6 @@
 
 - name: Grupos y usuarios de prueba
   ansible.builtin.import_playbook: 05-identidades.yml
+
+- name: GPO como código
+  ansible.builtin.import_playbook: 06-gpo.yml

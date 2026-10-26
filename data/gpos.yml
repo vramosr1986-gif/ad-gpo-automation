@@ -1,0 +1,28 @@
+# GPO del lab (rol ad_gpo). Solo ajustes de registro (Registry.pol): se leen con
+# Get-GPRegistryValue y se comparan, así que el rol es idempotente.
+#   links: OU relativas al dominio del DC (el rol añade DC=lab,DC=local, etc.)
+#   settings.key: HKLM\... (Configuración del equipo) o HKCU\... (Configuración de usuario)
+ad_gpos:
+  - name: GPO_Servidores_Base
+    comment: Ajustes básicos de los servidores miembro
+    links: [OU=Servidores]
+    settings:
+      # Plantillas administrativas > Sistema > Administrador del servidor
+      - { key: 'HKLM\Software\Policies\Microsoft\Windows\Server\ServerManager', value_name: DoNotOpenAtLogon, type: DWord, value: 1 }
+      # Servicios de Escritorio remoto > Seguridad > Requerir autenticación a nivel de red (NLA)
+      - { key: 'HKLM\Software\Policies\Microsoft\Windows NT\Terminal Services', value_name: UserAuthentication, type: DWord, value: 1 }
+
+  - name: GPO_Servidores_Firewall
+    comment: Firewall de Windows activado en el perfil de dominio
+    links: [OU=Servidores]
+    settings:
+      - { key: 'HKLM\Software\Policies\Microsoft\WindowsFirewall\DomainProfile', value_name: EnableFirewall, type: DWord, value: 1 }
+
+  - name: GPO_Usuarios_Bloqueo
+    comment: Bloqueo de sesión con salvapantallas a los 15 minutos
+    links: [OU=Usuarios]
+    settings:
+      # Configuración de usuario > Panel de control > Personalización (los tres son REG_SZ)
+      - { key: 'HKCU\Software\Policies\Microsoft\Windows\Control Panel\Desktop', value_name: ScreenSaveActive, type: String, value: '1' }
+      - { key: 'HKCU\Software\Policies\Microsoft\Windows\Control Panel\Desktop', value_name: ScreenSaverIsSecure, type: String, value: '1' }
+      - { key: 'HKCU\Software\Policies\Microsoft\Windows\Control Panel\Desktop', value_name: ScreenSaveTimeOut, type: String, value: '900' }

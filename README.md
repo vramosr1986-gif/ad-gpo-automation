@@ -710,6 +710,28 @@ delegate_to: "{{ ad_parent_dc | default(inventory_hostname) }}"
 
 Lo detecté porque, después de cada cambio en el rol, vuelvo a ejecutar **los dos** playbooks, no solo el que estoy tocando.
 
+**5. La confianza fallaba desde DC01 por la caché DNS.** Con el lab montado con `scripts/Deploy-Lab.ps1`, la comprobación de la confianza (`TrustIsOk`) fallaba en DC01 y, al fallar, Ansible dejaba de ejecutar el resto de plays en DC01. Las zonas estaban limpias: en las dos, `dc02.emea.lab.local` solo tenía `192.168.56.11`. El problema estaba en la **caché del servidor DNS** de DC01:
+
+```powershell
+Resolve-DnsName dc02.emea.lab.local -Type A -Server 192.168.56.10
+# dc02.emea.lab.local   A   2217   192.168.133.136   ← IP de la NAT, sale de la caché (TTL en segundos)
+```
+
+Durante la promoción, el DNS de DC02 responde un rato también con su IP de la NAT; DC01 la guarda en caché y la sigue usando aunque el rol ya la haya quitado de la zona.
+
+Solución en `playbooks/02-deploy-child-domain.yml`: el play de comprobación se ejecuta en `domain_controllers` (los dos sentidos de la confianza) y, antes de comprobar, **cada DC del grupo vacía su caché**. No depende de cuántos DC haya:
+
+```yaml
+- name: Vaciar la caché DNS de {{ inventory_hostname }} para no usar IP de la NAT guardadas
+  ansible.windows.win_powershell:
+    script: |
+      Clear-DnsServerCache -Force
+      Clear-DnsClientCache
+      $Ansible.Changed = $false
+```
+
+`$Ansible.Changed = $false` porque vaciar la caché no cambia la configuración: la segunda ejecución sigue terminando con `changed=0`. La comprobación además reintenta (`until`, 10 veces cada 30 s) mientras la replicación termina.
+
 ### Paso 8 — SRV01: servidor miembro unido al dominio
 
 SRV01 (Windows Server 2022 Core) se une a `lab.local` como servidor miembro. No se une a cualquier sitio: su cuenta de equipo va en `OU=Servidores`, porque el contenedor por defecto `CN=Computers` no admite GPO. Los DC se quedan en `OU=Domain Controllers`, que tiene enlazada la *Default Domain Controllers Policy* y de la que no se mueven nunca.
@@ -938,8 +960,8 @@ cd ad-gpo-automation
 |---|---|---|
 | 1. Requisitos | comprueba VMware, Vagrant y su plugin, el servicio `VagrantVMware`, la red VMnet1 y WSL. Si falta algo, dice en qué paso del README se instala | — |
 | 2. WSL | lanza `scripts/setup-wsl.sh`: entorno de Python, Ansible y `pywinrm` con versión fija (`requirements.txt`), colecciones (`collections/requirements.yml`) y vault | no reinstala nada |
-| 3. VMs | `vagrant up --provider vmware_desktop`: crea DC01, DC02 y SRV01 y les pone la IP del lab | no hace nada |
-| 4. WinRM | espera a que las tres VMs respondan en `192.168.56.10`, `.11` y `.20` | — |
+| 3. VMs | `vagrant up <VM> --provider vmware_desktop`, **una VM cada vez** y hasta 3 intentos: crea DC01, DC02 y SRV01 y les pone la IP del lab | no hace nada |
+| 4. WinRM | espera a que las tres VMs respondan en `192.168.56.10`, `.11` y `.20`. Si una no responde, lanza sus provisioners (`vagrant provision <VM>`) y vuelve a esperar | — |
 | 5. AD | `playbooks/site.yml`: bosque, papelera, dominio hijo, DNS, OU, SRV01 unido al dominio, grupos y usuarios. Salida en `logs/` (fuera de git) | `changed=0` |
 
 Con `-ComprobarIdempotencia` aplica `site.yml` una segunda vez y avisa si algún host termina con `changed` distinto de 0.
@@ -967,7 +989,7 @@ ANSIBLE_CONFIG=$PWD/ansible.cfg ansible-playbook playbooks/site.yml
 
 #### Problemas que me encontré
 
-**`vagrant up DC01` se quedaba en *Waiting for machine to boot*.** Al arrancar, Vagrant pregunta a VMware (`vmrun`) la IP de la VM para reenviarle los puertos (WinRM, RDP). VMware le devolvió la IP del lab, `192.168.56.10`, y no la de la NAT. La tabla de reenvíos de la NAT (`C:\ProgramData\VMware\vmnetnat.conf`) quedó así:
+**1. `vagrant up DC01` se quedaba en *Waiting for machine to boot*.** Al arrancar, Vagrant pregunta a VMware (`vmrun`) la IP de la VM para reenviarle los puertos (WinRM, RDP). VMware le devolvió la IP del lab, `192.168.56.10`, y no la de la NAT. La tabla de reenvíos de la NAT (`C:\ProgramData\VMware\vmnetnat.conf`) quedó así:
 
 ```
 2229 = 192.168.56.10:5985     ← la NAT (VMnet8) no llega a VMnet1
@@ -975,6 +997,21 @@ ANSIBLE_CONFIG=$PWD/ansible.cfg ansible-playbook playbooks/site.yml
 ```
 
 Vagrant esperaba WinRM en `127.0.0.1:2229` y nunca llegaba. Solución en el `Vagrantfile`, en cada VM: `vm.enable_vmrun_ip_lookup = false`, para que la IP se saque del DHCP de la NAT, que siempre es la correcta. Se aplica con `vagrant reload`.
+
+**2. *Guest-specific operations were attempted on a machine that is not ready for guest communication*.** Le pasó a DC02 y, en otra ejecución, a SRV01. Vagrant cambia el nombre de la VM, Windows se reinicia y Vagrant intenta reconectar por WinRM una sola vez: si la VM aún no ha arrancado, aborta. Como un solo `vagrant up` crea las tres VMs, el fallo de una dejaba a medias las siguientes, **sin sus provisioners** (`lab-ip`, `lab-tuning`), y la VM se quedaba sin la IP del lab.
+
+Solución, en dos sitios:
+
+- `Vagrantfile`: que Vagrant reintente WinRM unos 5 minutos en vez de rendirse a la primera:
+
+  ```ruby
+  config.winrm.retry_limit = 30
+  config.winrm.retry_delay = 10
+  ```
+
+- `scripts/Deploy-Lab.ps1`: `vagrant up` de **una VM cada vez**, con hasta 3 intentos. En la fase 4, si una VM no responde en su IP del lab, el script lanza `vagrant provision <VM>` (los provisioners solo se ejecutan solos en el primer `up`) y vuelve a esperar.
+
+**3. La comprobación de la confianza fallaba en DC01** con *The specified domain either does not exist or could not be contacted*, aunque las dos zonas DNS estaban bien. Ver el problema 5 del Paso 7.
 
 ### Cuentas y contraseñas del lab
 

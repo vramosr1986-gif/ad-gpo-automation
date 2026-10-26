@@ -89,19 +89,44 @@ wsl.exe -e bash -lc "bash '$wslRepo/scripts/setup-wsl.sh'"
 if ($LASTEXITCODE) { throw 'scripts/setup-wsl.sh ha fallado (mira el mensaje de arriba)' }
 
 # --- 3. VMs -----------------------------------------------------------------
+# Una a una y con reintentos: Windows se reinicia al cambiar el nombre y a veces
+# Vagrant intenta hablar con la VM antes de que WinRM vuelva ("not ready for guest
+# communication"). Un nuevo vagrant up sobre la misma VM continúa donde se quedó.
 Write-Paso '3/5 Crear y arrancar las VMs (vagrant up)'
-vagrant up --provider vmware_desktop
-if ($LASTEXITCODE) { throw 'vagrant up ha fallado' }
+foreach ($vm in $vms.Keys) {
+    $ok = $false
+    for ($i = 1; $i -le 3 -and -not $ok; $i++) {
+        vagrant up $vm --provider vmware_desktop
+        $ok = -not $LASTEXITCODE
+        if (-not $ok -and $i -lt 3) {
+            Write-Host "  vagrant up $vm ha fallado (intento $i de 3): reintento en 60 s" -ForegroundColor Yellow
+            Start-Sleep -Seconds 60
+        }
+    }
+    if (-not $ok) { throw "vagrant up $vm ha fallado 3 veces" }
+}
 
 # --- 4. WinRM ---------------------------------------------------------------
+# Si una VM no responde en su IP del lab, lo normal es que el vagrant up anterior
+# fallara antes de los provisioners (lab-ip pone esa IP): se lanzan una vez y se
+# vuelve a esperar. vagrant up sobre una VM encendida no los ejecuta.
+function Wait-WinRM([string] $ip, [int] $intentos = 30) {
+    for ($i = 1; $i -le $intentos; $i++) {
+        if (Test-NetConnection $ip -Port 5985 -InformationLevel Quiet -WarningAction SilentlyContinue) { return $true }
+        Start-Sleep -Seconds 10
+    }
+    return $false
+}
 Write-Paso '4/5 Esperar a WinRM en la IP del lab'
 foreach ($vm in $vms.GetEnumerator()) {
-    $ok = $false
-    for ($i = 1; $i -le 30 -and -not $ok; $i++) {
-        $ok = Test-NetConnection $vm.Value -Port 5985 -InformationLevel Quiet -WarningAction SilentlyContinue
-        if (-not $ok) { Start-Sleep -Seconds 10 }
+    if (-not (Wait-WinRM $vm.Value)) {
+        Write-Host "  $($vm.Key) no responde en $($vm.Value): lanzo sus provisioners (vagrant provision)" -ForegroundColor Yellow
+        vagrant provision $vm.Key
+        if ($LASTEXITCODE) { throw "vagrant provision $($vm.Key) ha fallado" }
+        if (-not (Wait-WinRM $vm.Value)) {
+            throw "$($vm.Key) ($($vm.Value)) no responde por WinRM (puerto 5985) ni después de vagrant provision"
+        }
     }
-    if (-not $ok) { throw "$($vm.Key) ($($vm.Value)) no responde por WinRM (puerto 5985) después de 5 minutos" }
     Write-Host "  $($vm.Key) ($($vm.Value)) responde por WinRM" -ForegroundColor Green
 }
 

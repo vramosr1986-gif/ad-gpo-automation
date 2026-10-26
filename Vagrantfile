@@ -4,6 +4,9 @@ config.vm.box_version = "2607.0.0"
 config.vm.communicator ="winrm"
 config.winrm.transport = :negotiate
 config.vm.boot_timeout = 1800
+# Windows se reinicia al cambiar el nombre: Vagrant reintenta WinRM ~5 min en vez de fallar a la primera
+config.winrm.retry_limit = 30
+config.winrm.retry_delay = 10
 config.vm.synced_folder ".", "/vagrant", disabled: true
 config.vm.provision "lab-tuning", type: "shell", path: "scripts/Optimize-LabGuest.ps1"
 

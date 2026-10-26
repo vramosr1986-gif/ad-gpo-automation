@@ -15,3 +15,40 @@
   gather_facts: false
   roles:
     - ad_forest
+
+# Windows crea la confianza padre-hijo al promover el DC hijo; aquí solo se comprueba
+# que funciona en los dos sentidos. No cambia la configuración (solo vacía la caché DNS).
+- name: Comprobar la confianza entre el dominio padre y el hijo
+  hosts: domain_controllers
+  gather_facts: false
+  tasks:
+    # Durante la promoción, el DNS del DC hijo responde un rato con su IP NAT, y los
+    # demás DC la guardan en caché (TTL 1 h) aunque el rol ya la haya borrado de la zona.
+    # Cada DC del grupo vacía su caché antes de comprobar: sirve para cualquier número de DC.
+    - name: Vaciar la caché DNS de {{ inventory_hostname }} para no usar IP de la NAT guardadas
+      ansible.windows.win_powershell:
+        script: |
+          Clear-DnsServerCache -Force
+          Clear-DnsClientCache
+          $Ansible.Changed = $false
+
+    - name: Comprobar desde {{ inventory_hostname }} que la confianza con el otro dominio está bien (TrustIsOk)
+      ansible.windows.win_powershell:
+        script: |
+          $trusts = @(Get-CimInstance -Namespace root/MicrosoftActiveDirectory -ClassName Microsoft_DomainTrustStatus |
+            Select-Object TrustedDomain, TrustIsOk, TrustStatusString, TrustedDCName)
+          $Ansible.Changed = $false
+          $Ansible.Failed = $trusts.Count -eq 0 -or ($trusts.TrustIsOk -contains $false)
+          $trusts
+      register: trust_check
+      # Justo después de la promoción la confianza puede tardar unos minutos en verificarse
+      until: trust_check is succeeded
+      retries: 10
+      delay: 30
+
+    - name: Mostrar el estado de la confianza
+      ansible.builtin.debug:
+        msg: "{{ item.TrustedDomain }}: {{ item.TrustStatusString }} (DC: {{ item.TrustedDCName }})"
+      loop: "{{ trust_check.output }}"
+      loop_control:
+        label: "{{ item.TrustedDomain }}"
